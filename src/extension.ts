@@ -48,6 +48,7 @@ class PythonHelperFile {
 
     write(text: string) {
         this.ensureDirAndMaybePromptGitignore();
+        console.debug(`Hydra Helper: Created virtual Python code: "${text}"`);
         fs.writeFileSync(this.helperFile, text, { encoding: 'utf8' });
     }
 
@@ -67,7 +68,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Hide .hydra_helper from the VS Code explorer
     vscode.workspace.getConfiguration('files').update(
         'exclude',
-        { '.hydra_helper': true },
+        { '.hydra_helper': false }, // for debugging purposes show it for now
         vscode.ConfigurationTarget.Workspace
     );
 
@@ -77,6 +78,16 @@ export function activate(context: vscode.ExtensionContext) {
         new HydraDefinitionProvider()
     );
     context.subscriptions.push(provider);
+
+    // Register our completion provider for YAML files
+    const completionProvider = vscode.languages.registerCompletionItemProvider(
+        { language: 'yaml' },
+        new HydraCompletionItemProvider(),
+        '.', // Trigger on dot for module path completion
+        '"', // Trigger on quote for new import
+        '\'' // Trigger on single quote
+    );
+    context.subscriptions.push(completionProvider);
 
     console.log('Hydra Helper extension is now active!');
 
@@ -110,7 +121,6 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         const modulePath = classPath.substring(0, lastDotIndex);
         const className = classPath.substring(lastDotIndex + 1);
         const pythonCode = `from ${modulePath} import ${className}`;
-        console.debug(`Hydra Helper: Created virtual Python code: "${pythonCode}"`);
 
         // Use the PythonHelperFile utility
         let helper: PythonHelperFile;
@@ -142,6 +152,72 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
             return undefined;
         }
         return undefined;
+    }
+}
+
+// --- PHASE 2b: COMPLETION PROVIDER ---
+class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
+    public async provideCompletionItems(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        token: vscode.CancellationToken,
+        context: vscode.CompletionContext
+    ): Promise<vscode.CompletionItem[] | undefined> {
+        console.log(`Hydra Helper: Completion provider triggered. Reason: ${context.triggerKind}`);
+        const lineText = document.lineAt(position.line).text;
+        const targetMatch = lineText.match(/_target_:\s*(['"]?)([\w\.]*)/);
+        if (!targetMatch) {
+            return undefined;
+        }
+        const query = targetMatch[2] || '';
+        return this.getImportCompletions(query);
+    }
+
+    /**
+     * Provides completions by simulating a Python import statement.
+     * This now handles both top-level packages and sub-modules.
+     */
+    private async getImportCompletions(query: string): Promise<vscode.CompletionItem[]> {
+        const lastDotIndex = query.lastIndexOf('.');
+        const modulePath = lastDotIndex === -1 ? '' : query.substring(0, lastDotIndex);
+        const partialSymbol = lastDotIndex === -1 ? query : query.substring(lastDotIndex + 1);
+        // If there's no module path, simulate a top-level import (e.g., "import my_app").
+        // Otherwise, simulate a from-import (e.g., "from my_app import database").
+        const pythonCode = modulePath
+            ? `from ${modulePath} import ${partialSymbol}`
+            : `import ${partialSymbol}`;
+        try {
+            // Use the PythonHelperFile utility for the virtual file
+            let helper: PythonHelperFile;
+            try {
+                helper = new PythonHelperFile();
+            } catch (e) {
+                vscode.window.showErrorMessage('Hydra Helper: No workspace folder found.');
+                return [];
+            }
+            await helper.ensureDirAndMaybePromptGitignore();
+            helper.write(pythonCode);
+            const fileUri = helper.getUri();
+            const positionInVirtualDoc = new vscode.Position(0, pythonCode.length);
+            console.debug('Hydra Helper: Asking Pylance for import completions...');
+            const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
+                'vscode.executeCompletionItemProvider',
+                fileUri,
+                positionInVirtualDoc
+            );
+            if (!completions) {
+                return [];
+            }
+            // Reconstruct the full path for each completion item.
+            return completions.items.map(item => {
+                const newLabel = modulePath ? `${modulePath}.${item.label}` : `${item.label}`;
+                const newItem = new vscode.CompletionItem(newLabel, item.kind);
+                return newItem;
+            });
+        } catch (error) {
+            console.error('Hydra Helper: Error during import completion.', error);
+            return [];
+        }
     }
 }
 
