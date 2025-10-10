@@ -96,6 +96,9 @@ export function activate(context: vscode.ExtensionContext) {
     helper.ensureDirAndMaybePromptGitignore().catch(err => {
         console.error('Hydra Helper: Error ensuring helper directory:', err);
     });
+
+    // Register linting diagnostics for _target_
+    activateHydraLinting(context);
 }
 
 class HydraDefinitionProvider implements vscode.DefinitionProvider {
@@ -219,6 +222,99 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             return [];
         }
     }
+}
+
+// --- PHASE 3: LINTING PROVIDER FOR _target_ ---
+const HYDRA_DIAGNOSTIC_COLLECTION = 'hydraHelperDiagnostics';
+
+function activateHydraLinting(context: vscode.ExtensionContext) {
+    const diagnostics = vscode.languages.createDiagnosticCollection(HYDRA_DIAGNOSTIC_COLLECTION);
+    context.subscriptions.push(diagnostics);
+
+    // Debounce map for document URIs
+    const debounceTimers: Map<string, NodeJS.Timeout> = new Map();
+
+    function triggerLint(document: vscode.TextDocument) {
+        if (document.languageId !== 'yaml') {
+            return;
+        }
+        const uriStr = document.uri.toString();
+        if (debounceTimers.has(uriStr)) {
+            clearTimeout(debounceTimers.get(uriStr));
+        }
+        debounceTimers.set(uriStr, setTimeout(() => {
+            lintDocument(document, diagnostics);
+            debounceTimers.delete(uriStr);
+        }, 400));
+    }
+
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(triggerLint),
+        vscode.workspace.onDidChangeTextDocument(e => triggerLint(e.document)),
+        vscode.workspace.onDidCloseTextDocument(doc => diagnostics.delete(doc.uri))
+    );
+
+    // Lint all open YAML docs on activation
+    vscode.workspace.textDocuments.forEach(doc => {
+        if (doc.languageId === 'yaml') {
+            triggerLint(doc);
+        }
+    });
+}
+
+async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.DiagnosticCollection) {
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const diags: vscode.Diagnostic[] = [];
+    for (let i = 0; i < lines.length; ++i) {
+        const line = lines[i];
+        const match = line.match(/_target_:\s*['"]?([\w\.]+)['"]?/);
+        if (match) {
+            const classPath = match[1];
+            // Check if this is a valid Python symbol using the same logic as definition provider
+            const lastDotIndex = classPath.lastIndexOf('.');
+            if (lastDotIndex === -1) {
+                continue;
+            }
+            const modulePath = classPath.substring(0, lastDotIndex);
+            const className = classPath.substring(lastDotIndex + 1);
+            const pythonCode = `from ${modulePath} import ${className}`;
+            let helper: PythonHelperFile;
+            try {
+                helper = new PythonHelperFile();
+            } catch (e) {
+                continue;
+            }
+            await helper.ensureDirAndMaybePromptGitignore();
+            helper.write(pythonCode);
+            const fileUri = helper.getUri();
+            const positionInVirtualDoc = new vscode.Position(0, pythonCode.indexOf(className));
+            let found = false;
+            try {
+                const locations = await vscode.commands.executeCommand<vscode.Location[]>(
+                    'vscode.executeDefinitionProvider',
+                    fileUri,
+                    positionInVirtualDoc
+                );
+                if (locations && locations.length > 0) {
+                    found = true;
+                }
+            } catch (error) {
+                found = false;
+            }
+            if (!found) {
+                // Underline the value behind _target_
+                const start = line.indexOf(classPath);
+                const range = new vscode.Range(i, start, i, start + classPath.length);
+                diags.push(new vscode.Diagnostic(
+                    range,
+                    `Hydra Helper: '${classPath}' is not a valid Python symbol.`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+            }
+        }
+    }
+    diagnostics.set(document.uri, diags);
 }
 
 // This function is called when your extension is deactivated.
