@@ -4,92 +4,120 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 
-// Utility class to manage the .hydra_helper Python helper file
-class PythonHelperFile {
-    private workspacePath: string;
-    private helperDir: string;
-    private helperFile: string;
-    private static CLEANUP_AGE_MS = 1000; // 1 second
+// Utility class to manage in-memory Python helper documents
+// Uses VS Code's text document API instead of physical files for better performance
+class PythonHelperDocument {
+    private shadowUri: vscode.Uri;
+    private static helperCounter = 0;
 
     constructor() {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders || workspaceFolders.length === 0) {
-            throw new Error('No workspace folder found.');
+            // Fallback: create a URI in a temporary location
+            // Even without a workspace, we can use an untitled scheme or a temp path
+            this.shadowUri = vscode.Uri.parse(`untitled:/.vscode/.pylance_shadow/hydra_stub_${PythonHelperDocument.helperCounter++}.py`);
+        } else {
+            // Create shadow URI inside workspace's .vscode folder
+            this.shadowUri = vscode.Uri.joinPath(
+                workspaceFolders[0].uri,
+                '.vscode',
+                '.pylance_shadow',
+                `hydra_stub_${PythonHelperDocument.helperCounter++}.py`
+            );
         }
-        this.workspacePath = workspaceFolders[0].uri.fsPath;
-        this.helperDir = path.join(this.workspacePath, '.hydra_helper');
-        // Use a unique file for each request
-        const unique = `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-        this.helperFile = path.join(this.helperDir, `virtual_${unique}.py`);
     }
 
-    async ensureDirAndMaybePromptGitignore() {
-        let created = false;
-        if (!fs.existsSync(this.helperDir)) {
-            fs.mkdirSync(this.helperDir);
-            created = true;
-        }
-        // If just created and workspace is a git repo, prompt user to add to .gitignore
-        if (created && fs.existsSync(path.join(this.workspacePath, '.git'))) {
-            const gitignorePath = path.join(this.workspacePath, '.gitignore');
-            let alreadyIgnored = false;
-            if (fs.existsSync(gitignorePath)) {
-                const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
-                alreadyIgnored = gitignoreContent.includes('.hydra_helper/');
+    /**
+     * Write Python code to an in-memory text document.
+     * Pylance will see this via onDidChangeTextDocument events.
+     * No physical file I/O is performed.
+     */
+    async write(text: string): Promise<void> {
+        try {
+            // Try to open existing document
+            let doc: vscode.TextDocument;
+            try {
+                doc = await vscode.workspace.openTextDocument(this.shadowUri);
+            } catch {
+                // Document doesn't exist, create it
+                const edit = new vscode.WorkspaceEdit();
+                edit.createFile(this.shadowUri, { ignoreIfExists: true });
+                await vscode.workspace.applyEdit(edit);
+                doc = await vscode.workspace.openTextDocument(this.shadowUri);
             }
-            if (!alreadyIgnored) {
-                const answer = await vscode.window.showInformationMessage(
-                    'The .hydra_helper folder is used for internal extension files. Would you like to add it to your .gitignore?',
-                    'Yes', 'No'
-                );
-                if (answer === 'Yes') {
-                    fs.appendFileSync(gitignorePath, '\n.hydra_helper/\n');
-                }
-            }
-        }
-        // Cleanup old helper files
-        this.cleanupOldFiles();
-    }
 
-    write(text: string) {
-        fs.writeFileSync(this.helperFile, text, { encoding: 'utf8' });
+            // Replace entire document content
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+                0, 0,
+                doc.lineCount, 0
+            );
+            edit.replace(this.shadowUri, fullRange, text);
+            await vscode.workspace.applyEdit(edit);
+
+            // Ensure Pylance recognizes it as Python
+            await vscode.languages.setTextDocumentLanguage(doc, 'python');
+        } catch (err) {
+            console.error('Hydra Helper: Error writing in-memory document:', err);
+            throw err;
+        }
     }
 
     getUri(): vscode.Uri {
-        return Uri.file(this.helperFile);
+        return this.shadowUri;
     }
 
-    getHelperFilePath(): string {
-        return this.helperFile;
-    }
-
-    cleanupFile() {
-        // Remove this specific helper file
+    /**
+     * Optional: Close the in-memory document.
+     * Note: This is not strictly necessary as the document will be garbage collected,
+     * but can be used for explicit cleanup.
+     */
+    async cleanup(): Promise<void> {
         try {
-            if (fs.existsSync(this.helperFile)) {
-                fs.unlinkSync(this.helperFile);
-            }
+            const edit = new vscode.WorkspaceEdit();
+            edit.deleteFile(this.shadowUri, { ignoreIfNotExists: true });
+            await vscode.workspace.applyEdit(edit);
         } catch (err) {
-            console.error('Hydra Helper: Error cleaning up helper file:', err);
+            // Ignore cleanup errors - document might not exist
+            console.debug('Hydra Helper: Cleanup skipped (document may not exist)');
         }
     }
 
-    // Remove helper files older than CLEANUP_AGE_MS
-    cleanupOldFiles() {
-        try {
-            const files = fs.readdirSync(this.helperDir);
-            const now = Date.now();
-            for (const file of files) {
-                if (file.startsWith('virtual_') && file.endsWith('.py')) {
-                    const filePath = path.join(this.helperDir, file);
-                    const stat = fs.statSync(filePath);
-                    if (now - stat.mtimeMs > PythonHelperFile.CLEANUP_AGE_MS) {
-                        fs.unlinkSync(filePath);
-                    }
-                }
+    /**
+     * Static method to ensure .vscode/.pylance_shadow is in .gitignore
+     */
+    static async ensureGitignoreEntry(): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            return;
+        }
+
+        const workspacePath = workspaceFolders[0].uri.fsPath;
+        if (!fs.existsSync(path.join(workspacePath, '.git'))) {
+            return; // Not a git repo
+        }
+
+        const gitignorePath = path.join(workspacePath, '.gitignore');
+        const shadowPath = '.vscode/.pylance_shadow/';
+        
+        let alreadyIgnored = false;
+        if (fs.existsSync(gitignorePath)) {
+            const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
+            alreadyIgnored = gitignoreContent.includes(shadowPath);
+        }
+
+        if (!alreadyIgnored) {
+            const answer = await vscode.window.showInformationMessage(
+                'The .vscode/.pylance_shadow folder is used for Hydra language support. Would you like to add it to your .gitignore?',
+                'Yes', 'No'
+            );
+            if (answer === 'Yes') {
+                const content = fs.existsSync(gitignorePath) 
+                    ? fs.readFileSync(gitignorePath, 'utf8')
+                    : '';
+                const newContent = content + (content.endsWith('\n') ? '' : '\n') + shadowPath + '\n';
+                fs.writeFileSync(gitignorePath, newContent, 'utf8');
             }
-        } catch (err) {
-            // Ignore cleanup errors
         }
     }
 }
@@ -120,12 +148,19 @@ function createPythonImportCode(target: string): { code: string, symbol: string,
 export function activate(context: vscode.ExtensionContext) {
     console.log('Hydra Helper extension is now becoming active!');
 
-    // Hide .hydra_helper from the VS Code explorer
-    vscode.workspace.getConfiguration('files').update(
-        'exclude',
-        { '.hydra_helper': false }, // for debugging purposes show it for now
-        vscode.ConfigurationTarget.Workspace
-    );
+    // Check if Pylance is available
+    const pylance = vscode.extensions.getExtension('ms-python.vscode-pylance');
+    if (!pylance) {
+        vscode.window.showWarningMessage(
+            'HydraLance requires the Pylance extension to function. Please install it from the marketplace.',
+            'Install Pylance'
+        ).then(selection => {
+            if (selection === 'Install Pylance') {
+                vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-python.vscode-pylance');
+            }
+        });
+        return;
+    }
 
     // Register our definition provider for YAML files.
     const provider = vscode.languages.registerDefinitionProvider(
@@ -147,10 +182,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     console.log('Hydra Helper extension is now active!');
 
-    // Ensure the helper directory exists and prompt for .gitignore if needed
-    const helper = new PythonHelperFile();
-    helper.ensureDirAndMaybePromptGitignore().catch(err => {
-        console.error('Hydra Helper: Error ensuring helper directory:', err);
+    // Ensure the shadow directory is in .gitignore if needed
+    PythonHelperDocument.ensureGitignoreEntry().catch((err: Error) => {
+        console.error('Hydra Helper: Error ensuring gitignore entry:', err);
     });
 
     // Register linting diagnostics for _target_
@@ -177,27 +211,25 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
             return undefined;
         }
         console.debug(`Hydra Helper: Created virtual Python code: "${pythonCode}"`);
-        // Use the PythonHelperFile utility
-        let helper: PythonHelperFile;
+        
+        // Use the in-memory PythonHelperDocument
+        const helper = new PythonHelperDocument();
         try {
-            helper = new PythonHelperFile();
-        } catch (e) {
-            vscode.window.showErrorMessage('Hydra Helper: No workspace folder found.');
-            return undefined;
-        }
-        await helper.ensureDirAndMaybePromptGitignore();
-        helper.write(pythonCode);
-        const fileUri = helper.getUri();
-        const posIdx = pythonCode.lastIndexOf(symbol);
-        const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
-        console.debug('Hydra Helper: Asking Pylance for the definition...');
-        try {
+            await helper.write(pythonCode);
+            const fileUri = helper.getUri();
+            const posIdx = pythonCode.lastIndexOf(symbol);
+            const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
+            
+            console.debug('Hydra Helper: Asking Pylance for the definition...');
             const locations = await vscode.commands.executeCommand<vscode.Location[]>(
                 'vscode.executeDefinitionProvider',
                 fileUri,
                 positionInVirtualDoc
             );
-            helper.cleanupFile();
+            
+            // Cleanup is optional with in-memory documents, but we'll do it to be tidy
+            await helper.cleanup();
+            
             if (locations && locations.length > 0) {
                 console.debug(`Hydra Helper: Pylance found a definition at: ${locations[0].uri.fsPath}`);
                 return locations;
@@ -205,11 +237,10 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
                 console.debug('Hydra Helper: Pylance could not find a definition.');
             }
         } catch (error) {
-            helper.cleanupFile();
+            await helper.cleanup();
             console.error('Hydra Helper: An error occurred.', error);
             return undefined;
         }
-        helper.cleanupFile();
         return undefined;
     }
 }
@@ -241,21 +272,23 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             return [];
         }
         console.log(`Hydra Helper: Created virtual Python code for completion: "${pythonCode}"`);
-        let helper: PythonHelperFile | undefined;
+        
+        const helper = new PythonHelperDocument();
         try {
-            helper = new PythonHelperFile();
-            await helper.ensureDirAndMaybePromptGitignore();
-            helper.write(pythonCode);
+            await helper.write(pythonCode);
             const fileUri = helper.getUri();
             const posIdx = pythonCode.lastIndexOf(symbol);
             const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
+            
             console.log('Hydra Helper: Asking Pylance for import completions...');
             const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
                 'vscode.executeCompletionItemProvider',
                 fileUri,
                 positionInVirtualDoc
             );
-            helper.cleanupFile();
+            
+            await helper.cleanup();
+            
             if (!completions) {
                 return [];
             }
@@ -267,9 +300,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                 return newItem;
             });
         } catch (error) {
-            if (helper) {
-                helper.cleanupFile();
-            }
+            await helper.cleanup();
             console.error('Hydra Helper: Error during import completion.', error);
             return [];
         }
@@ -327,30 +358,27 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
             if (!pythonCode) {
                 continue;
             }
-            let helper: PythonHelperFile;
-            try {
-                helper = new PythonHelperFile();
-            } catch (e) {
-                continue;
-            }
-            await helper.ensureDirAndMaybePromptGitignore();
-            helper.write(pythonCode);
-            const fileUri = helper.getUri();
-            const posIdx = pythonCode.lastIndexOf(symbol);
-            const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
+            const helper = new PythonHelperDocument();
             let found = false;
             try {
+                await helper.write(pythonCode);
+                const fileUri = helper.getUri();
+                const posIdx = pythonCode.lastIndexOf(symbol);
+                const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
+                
                 const locations = await vscode.commands.executeCommand<vscode.Location[]>(
                     'vscode.executeDefinitionProvider',
                     fileUri,
                     positionInVirtualDoc
                 );
-                helper.cleanupFile();
+                
+                await helper.cleanup();
+                
                 if (locations && locations.length > 0) {
                     found = true;
                 }
             } catch (error) {
-                helper.cleanupFile();
+                await helper.cleanup();
                 found = false;
             }
             if (!found) {

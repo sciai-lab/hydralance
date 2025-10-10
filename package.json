@@ -12,14 +12,22 @@
   "activationEvents": [
     "onLanguage:yaml"
   ],
+  "extensionDependencies": [
+    "ms-python.vscode-pylance"
+  ],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "hydralance.helloWorld",
-        "title": "Hello World"
+    "commands": [],
+    "configuration": {
+      "title": "HydraLance",
+      "properties": {
+        "hydralance.hideHelperFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hide the .vscode/.pylance_shadow folder from the VS Code explorer"
+        }
       }
-    ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
