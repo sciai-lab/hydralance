@@ -9,6 +9,7 @@ class PythonHelperFile {
     private workspacePath: string;
     private helperDir: string;
     private helperFile: string;
+    private static CLEANUP_AGE_MS = 1000; // 1 second
 
     constructor() {
         const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -17,10 +18,12 @@ class PythonHelperFile {
         }
         this.workspacePath = workspaceFolders[0].uri.fsPath;
         this.helperDir = path.join(this.workspacePath, '.hydra_helper');
-        this.helperFile = path.join(this.helperDir, 'virtual.py');
+        // Use a unique file for each request
+        const unique = `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+        this.helperFile = path.join(this.helperDir, `virtual_${unique}.py`);
     }
 
-    ensureDirAndMaybePromptGitignore = async () => {
+    async ensureDirAndMaybePromptGitignore() {
         let created = false;
         if (!fs.existsSync(this.helperDir)) {
             fs.mkdirSync(this.helperDir);
@@ -44,11 +47,11 @@ class PythonHelperFile {
                 }
             }
         }
-    };
+        // Cleanup old helper files
+        this.cleanupOldFiles();
+    }
 
     write(text: string) {
-        this.ensureDirAndMaybePromptGitignore();
-        console.debug(`Hydra Helper: Created virtual Python code: "${text}"`);
         fs.writeFileSync(this.helperFile, text, { encoding: 'utf8' });
     }
 
@@ -59,6 +62,47 @@ class PythonHelperFile {
     getHelperFilePath(): string {
         return this.helperFile;
     }
+
+    // Remove helper files older than CLEANUP_AGE_MS
+    cleanupOldFiles() {
+        try {
+            const files = fs.readdirSync(this.helperDir);
+            const now = Date.now();
+            for (const file of files) {
+                if (file.startsWith('virtual_') && file.endsWith('.py')) {
+                    const filePath = path.join(this.helperDir, file);
+                    const stat = fs.statSync(filePath);
+                    if (now - stat.mtimeMs > PythonHelperFile.CLEANUP_AGE_MS) {
+                        fs.unlinkSync(filePath);
+                    }
+                }
+            }
+        } catch (err) {
+            // Ignore cleanup errors
+        }
+    }
+}
+
+// --- Utility: Create Python import code for a Hydra _target_ string ---
+function createPythonImportCode(target: string): { code: string, symbol: string, type: 'import' | 'method' } {
+    const parts = target.split('.');
+    if (parts.length < 2) {
+        // Not enough info to import
+        return { code: '', symbol: target, type: 'import' };
+    }
+    if (parts.length === 2) {
+        // module.class or module.function
+        return { code: `from ${parts[0]} import ${parts[1]}`, symbol: parts[1], type: 'import' };
+    }
+    // module.class.method or deeper
+    const modulePath = parts.slice(0, -2).join('.');
+    const className = parts[parts.length - 2];
+    const methodName = parts[parts.length - 1];
+    return {
+        code: `${modulePath ? `from ${modulePath} import ${className}` : `import ${className}`}; ${className}.${methodName}`,
+        symbol: methodName,
+        type: 'method'
+    };
 }
 
 // This function is called when the extension is activated.
@@ -84,8 +128,8 @@ export function activate(context: vscode.ExtensionContext) {
         { language: 'yaml' },
         new HydraCompletionItemProvider(),
         '.', // Trigger on dot for module path completion
-        '"', // Trigger on quote for new import
-        '\'' // Trigger on single quote
+        // '"', // Trigger on quote for new import
+        // '\'' // Trigger on single quote
     );
     context.subscriptions.push(completionProvider);
 
@@ -98,7 +142,7 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     // Register linting diagnostics for _target_
-    activateHydraLinting(context);
+    // activateHydraLinting(context);
 }
 
 class HydraDefinitionProvider implements vscode.DefinitionProvider {
@@ -116,15 +160,11 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         }
         const classPath = match[1];
         console.debug(`Hydra Helper: Found potential class path: ${classPath}`);
-        const lastDotIndex = classPath.lastIndexOf('.');
-        if (lastDotIndex === -1) {
-            console.debug(`Hydra Helper: Invalid class path format: ${classPath}`);
+        const { code: pythonCode, symbol, type } = createPythonImportCode(classPath);
+        if (!pythonCode) {
             return undefined;
         }
-        const modulePath = classPath.substring(0, lastDotIndex);
-        const className = classPath.substring(lastDotIndex + 1);
-        const pythonCode = `from ${modulePath} import ${className}`;
-
+        console.debug(`Hydra Helper: Created virtual Python code: "${pythonCode}"`);
         // Use the PythonHelperFile utility
         let helper: PythonHelperFile;
         try {
@@ -133,10 +173,12 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
             vscode.window.showErrorMessage('Hydra Helper: No workspace folder found.');
             return undefined;
         }
-        await helper.ensureDirAndMaybePromptGitignore();
+        // await helper.ensureDirAndMaybePromptGitignore();
         helper.write(pythonCode);
         const fileUri = helper.getUri();
-        const positionInVirtualDoc = new vscode.Position(0, pythonCode.indexOf(className));
+        // For method, position at method name; for import, position at symbol
+        const posIdx = pythonCode.lastIndexOf(symbol);
+        const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
         console.debug('Hydra Helper: Asking Pylance for the definition...');
         try {
             const locations = await vscode.commands.executeCommand<vscode.Location[]>(
@@ -181,16 +223,12 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
      * This now handles both top-level packages and sub-modules.
      */
     private async getImportCompletions(query: string): Promise<vscode.CompletionItem[]> {
-        const lastDotIndex = query.lastIndexOf('.');
-        const modulePath = lastDotIndex === -1 ? '' : query.substring(0, lastDotIndex);
-        const partialSymbol = lastDotIndex === -1 ? query : query.substring(lastDotIndex + 1);
-        // If there's no module path, simulate a top-level import (e.g., "import my_app").
-        // Otherwise, simulate a from-import (e.g., "from my_app import database").
-        const pythonCode = modulePath
-            ? `from ${modulePath} import ${partialSymbol}`
-            : `import ${partialSymbol}`;
+        const { code: pythonCode, symbol, type } = createPythonImportCode(query);
+        if (!pythonCode) {
+            return [];
+        }
+        console.log(`Hydra Helper: Created virtual Python code for completion: "${pythonCode}"`);
         try {
-            // Use the PythonHelperFile utility for the virtual file
             let helper: PythonHelperFile;
             try {
                 helper = new PythonHelperFile();
@@ -201,8 +239,10 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             await helper.ensureDirAndMaybePromptGitignore();
             helper.write(pythonCode);
             const fileUri = helper.getUri();
-            const positionInVirtualDoc = new vscode.Position(0, pythonCode.length);
-            console.debug('Hydra Helper: Asking Pylance for import completions...');
+            // For method, position at method name; for import, position at symbol
+            const posIdx = pythonCode.lastIndexOf(symbol);
+            const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
+            console.log('Hydra Helper: Asking Pylance for import completions...');
             const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
                 'vscode.executeCompletionItemProvider',
                 fileUri,
@@ -212,6 +252,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                 return [];
             }
             // Reconstruct the full path for each completion item.
+            const modulePath = query.split('.').slice(0, -1).join('.');
             return completions.items.map(item => {
                 const newLabel = modulePath ? `${modulePath}.${item.label}` : `${item.label}`;
                 const newItem = new vscode.CompletionItem(newLabel, item.kind);
@@ -271,14 +312,10 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
         const match = line.match(/_target_:\s*['"]?([\w\.]+)['"]?/);
         if (match) {
             const classPath = match[1];
-            // Check if this is a valid Python symbol using the same logic as definition provider
-            const lastDotIndex = classPath.lastIndexOf('.');
-            if (lastDotIndex === -1) {
+            const { code: pythonCode, symbol, type } = createPythonImportCode(classPath);
+            if (!pythonCode) {
                 continue;
             }
-            const modulePath = classPath.substring(0, lastDotIndex);
-            const className = classPath.substring(lastDotIndex + 1);
-            const pythonCode = `from ${modulePath} import ${className}`;
             let helper: PythonHelperFile;
             try {
                 helper = new PythonHelperFile();
@@ -288,7 +325,8 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
             await helper.ensureDirAndMaybePromptGitignore();
             helper.write(pythonCode);
             const fileUri = helper.getUri();
-            const positionInVirtualDoc = new vscode.Position(0, pythonCode.indexOf(className));
+            const posIdx = pythonCode.lastIndexOf(symbol);
+            const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
             let found = false;
             try {
                 const locations = await vscode.commands.executeCommand<vscode.Location[]>(
@@ -308,7 +346,7 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
                 const range = new vscode.Range(i, start, i, start + classPath.length);
                 diags.push(new vscode.Diagnostic(
                     range,
-                    `Hydra Helper: '${classPath}' is not a valid Python symbol.`,
+                    `Hydra Helper: '${classPath}' is not a valid Python symbol (cannot be resolved).`,
                     vscode.DiagnosticSeverity.Error
                 ));
             }
