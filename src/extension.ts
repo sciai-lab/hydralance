@@ -63,6 +63,17 @@ class PythonHelperFile {
         return this.helperFile;
     }
 
+    cleanupFile() {
+        // Remove this specific helper file
+        try {
+            if (fs.existsSync(this.helperFile)) {
+                fs.unlinkSync(this.helperFile);
+            }
+        } catch (err) {
+            console.error('Hydra Helper: Error cleaning up helper file:', err);
+        }
+    }
+
     // Remove helper files older than CLEANUP_AGE_MS
     cleanupOldFiles() {
         try {
@@ -127,6 +138,7 @@ export function activate(context: vscode.ExtensionContext) {
     const completionProvider = vscode.languages.registerCompletionItemProvider(
         { language: 'yaml' },
         new HydraCompletionItemProvider(),
+        ':',
         '.', // Trigger on dot for module path completion
         // '"', // Trigger on quote for new import
         // '\'' // Trigger on single quote
@@ -173,10 +185,9 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
             vscode.window.showErrorMessage('Hydra Helper: No workspace folder found.');
             return undefined;
         }
-        // await helper.ensureDirAndMaybePromptGitignore();
+        await helper.ensureDirAndMaybePromptGitignore();
         helper.write(pythonCode);
         const fileUri = helper.getUri();
-        // For method, position at method name; for import, position at symbol
         const posIdx = pythonCode.lastIndexOf(symbol);
         const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
         console.debug('Hydra Helper: Asking Pylance for the definition...');
@@ -186,6 +197,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
                 fileUri,
                 positionInVirtualDoc
             );
+            helper.cleanupFile();
             if (locations && locations.length > 0) {
                 console.debug(`Hydra Helper: Pylance found a definition at: ${locations[0].uri.fsPath}`);
                 return locations;
@@ -193,14 +205,15 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
                 console.debug('Hydra Helper: Pylance could not find a definition.');
             }
         } catch (error) {
+            helper.cleanupFile();
             console.error('Hydra Helper: An error occurred.', error);
             return undefined;
         }
+        helper.cleanupFile();
         return undefined;
     }
 }
 
-// --- PHASE 2b: COMPLETION PROVIDER ---
 class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
     public async provideCompletionItems(
         document: vscode.TextDocument,
@@ -228,18 +241,12 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             return [];
         }
         console.log(`Hydra Helper: Created virtual Python code for completion: "${pythonCode}"`);
+        let helper: PythonHelperFile | undefined;
         try {
-            let helper: PythonHelperFile;
-            try {
-                helper = new PythonHelperFile();
-            } catch (e) {
-                vscode.window.showErrorMessage('Hydra Helper: No workspace folder found.');
-                return [];
-            }
+            helper = new PythonHelperFile();
             await helper.ensureDirAndMaybePromptGitignore();
             helper.write(pythonCode);
             const fileUri = helper.getUri();
-            // For method, position at method name; for import, position at symbol
             const posIdx = pythonCode.lastIndexOf(symbol);
             const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
             console.log('Hydra Helper: Asking Pylance for import completions...');
@@ -248,6 +255,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                 fileUri,
                 positionInVirtualDoc
             );
+            helper.cleanupFile();
             if (!completions) {
                 return [];
             }
@@ -259,6 +267,9 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                 return newItem;
             });
         } catch (error) {
+            if (helper) {
+                helper.cleanupFile();
+            }
             console.error('Hydra Helper: Error during import completion.', error);
             return [];
         }
@@ -334,10 +345,12 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
                     fileUri,
                     positionInVirtualDoc
                 );
+                helper.cleanupFile();
                 if (locations && locations.length > 0) {
                     found = true;
                 }
             } catch (error) {
+                helper.cleanupFile();
                 found = false;
             }
             if (!found) {
