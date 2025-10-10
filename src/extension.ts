@@ -34,29 +34,10 @@ class PythonHelperDocument {
      */
     async write(text: string): Promise<void> {
         try {
-            // Try to open existing document
-            let doc: vscode.TextDocument;
-            try {
-                doc = await vscode.workspace.openTextDocument(this.shadowUri);
-            } catch {
-                // Document doesn't exist, create it
-                const edit = new vscode.WorkspaceEdit();
-                edit.createFile(this.shadowUri, { ignoreIfExists: true });
-                await vscode.workspace.applyEdit(edit);
-                doc = await vscode.workspace.openTextDocument(this.shadowUri);
-            }
-
-            // Replace entire document content
             const edit = new vscode.WorkspaceEdit();
-            const fullRange = new vscode.Range(
-                0, 0,
-                doc.lineCount, 0
-            );
-            edit.replace(this.shadowUri, fullRange, text);
+            edit.deleteFile(this.shadowUri, { ignoreIfNotExists: true });
+            edit.createFile(this.shadowUri, { contents: Buffer.from(text) });
             await vscode.workspace.applyEdit(edit);
-
-            // Ensure Pylance recognizes it as Python
-            await vscode.languages.setTextDocumentLanguage(doc, 'python');
         } catch (err) {
             console.error('Hydra Helper: Error writing in-memory document:', err);
             throw err;
@@ -174,7 +155,8 @@ export function activate(context: vscode.ExtensionContext) {
         { language: 'yaml' },
         new HydraCompletionItemProvider(),
         ':',
-        '.', // Trigger on dot for module path completion
+        '.', 
+        // Trigger on dot for module path completion
         // '"', // Trigger on quote for new import
         // '\'' // Trigger on single quote
     );
@@ -188,7 +170,7 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     // Register linting diagnostics for _target_
-    // activateHydraLinting(context);
+    activateHydraLinting(context);
 }
 
 class HydraDefinitionProvider implements vscode.DefinitionProvider {
@@ -217,6 +199,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         try {
             await helper.write(pythonCode);
             const fileUri = helper.getUri();
+            const doc = await vscode.workspace.openTextDocument(fileUri);
             const posIdx = pythonCode.lastIndexOf(symbol);
             const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
             
@@ -277,6 +260,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
         try {
             await helper.write(pythonCode);
             const fileUri = helper.getUri();
+            const doc = await vscode.workspace.openTextDocument(fileUri);
             const posIdx = pythonCode.lastIndexOf(symbol);
             const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
             
@@ -328,7 +312,7 @@ function activateHydraLinting(context: vscode.ExtensionContext) {
         debounceTimers.set(uriStr, setTimeout(() => {
             lintDocument(document, diagnostics);
             debounceTimers.delete(uriStr);
-        }, 400));
+        }, 2000)); // 2 second debounce
     }
 
     context.subscriptions.push(
@@ -363,6 +347,7 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
             try {
                 await helper.write(pythonCode);
                 const fileUri = helper.getUri();
+                const doc = await vscode.workspace.openTextDocument(fileUri);
                 const posIdx = pythonCode.lastIndexOf(symbol);
                 const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
                 
