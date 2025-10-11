@@ -108,12 +108,31 @@ function createPythonImportCode(target: string): { code: string, symbol: string,
     const parts = target.split('.');
     if (parts.length < 2) {
         // Not enough info to import
-        return { code: '', symbol: target, type: 'import' };
+        return { code: `import ${target}`, symbol: target, type: 'import' };
     }
-    if (parts.length === 2) {
-        // module.class or module.function
-        return { code: `from ${parts[0]} import ${parts[1]}`, symbol: parts[1], type: 'import' };
+    // check if the second last part is uppercase, implying a method being autocompleted / linted
+    const secondLast = parts[parts.length - 2];
+    if (secondLast[0] === secondLast[0].toUpperCase()) {
+        // module.submodule.Class.method
+        const modulePath = parts.slice(0, -2).join('.');
+        const className = parts[parts.length - 2];
+        const methodName = parts[parts.length - 1];
+        return {
+            code: `${modulePath ? `from ${modulePath} import ${className}` : `import ${className}`}; ${className}.${methodName}`,
+            symbol: methodName,
+            type: 'method'
+        };
+    } else {
+        // module.submodule.function or module.submodule1.submodule2
+        const modulePath = parts.slice(0, -1).join('.');
+        const functionName = parts[parts.length - 1];
+        return {
+            code: `from ${modulePath} import ${functionName}`,
+            symbol: functionName,
+            type: 'import'
+        };
     }
+
     // module.class.method or deeper
     const modulePath = parts.slice(0, -2).join('.');
     const className = parts[parts.length - 2];
