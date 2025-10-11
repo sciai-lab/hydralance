@@ -125,8 +125,37 @@ function createPythonImportCode(target: string): { code: string, symbol: string,
     };
 }
 
+// --- Utility: Test if Pyright is ready by resolving a known symbol ---
+async function testPyrightReady(): Promise<boolean> {
+    const { code: pythonCode, symbol } = createPythonImportCode('sys.version');
+    if (!pythonCode) {
+        return false;
+    }
+
+    const helper = new PythonHelperDocument();
+    try {
+        await helper.write(pythonCode);
+        const fileUri = helper.getUri();
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        const posIdx = pythonCode.lastIndexOf(symbol);
+        const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
+
+        const locations = await vscode.commands.executeCommand<vscode.Location[]>(
+            'vscode.executeDefinitionProvider',
+            fileUri,
+            positionInVirtualDoc
+        );
+
+        await helper.cleanup();
+        return locations && locations.length > 0;
+    } catch (error) {
+        await helper.cleanup();
+        return false;
+    }
+}
+
 // This function is called when the extension is activated.
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     console.log('Hydra Helper extension is now becoming active!');
 
     // Check if Pylance is available
@@ -142,6 +171,21 @@ export function activate(context: vscode.ExtensionContext) {
         });
         return;
     }
+
+    // Ensure Python extension is active (which activates Pylance/Pyright)
+    const pythonExt = vscode.extensions.getExtension('ms-python.python');
+    if (pythonExt && !pythonExt.isActive) {
+        console.log('Hydra Helper: Waiting for Python extension to activate...');
+        await pythonExt.activate();
+        console.log('Hydra Helper: Python extension activated.');
+    }
+
+    // Poll until Pyright is ready to resolve symbols
+    console.log('Hydra Helper: Waiting for Pyright to be ready...');
+    while (!(await testPyrightReady())) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    console.log('Hydra Helper: Pyright is ready.');
 
     // Register our definition provider for YAML files.
     const provider = vscode.languages.registerDefinitionProvider(
