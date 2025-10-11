@@ -172,14 +172,6 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
     }
 
-    // Ensure Python extension is active (which activates Pylance/Pyright)
-    const pythonExt = vscode.extensions.getExtension('ms-python.python');
-    if (pythonExt && !pythonExt.isActive) {
-        console.log('Hydra Helper: Waiting for Python extension to activate...');
-        await pythonExt.activate();
-        console.log('Hydra Helper: Python extension activated.');
-    }
-
     // Poll until Pyright is ready to resolve symbols
     console.log('Hydra Helper: Waiting for Pyright to be ready...');
     while (!(await testPyrightReady())) {
