@@ -194,6 +194,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Poll until Pyright is ready to resolve symbols
     console.log('Hydra Helper: Waiting for Pyright to be ready...');
     while (!(await testPyrightReady())) {
+        console.log('Hydra Helper: Pyright not ready yet, retrying in 2 seconds...');
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
     console.log('Hydra Helper: Pyright is ready.');
@@ -331,13 +332,41 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             if (!completions) {
                 return [];
             }
-            // Reconstruct the full path for each completion item.
+            // Filter and reconstruct completion items for _target_ (only modules, classes, functions, methods).
             const modulePath = query.split('.').slice(0, -1).join('.');
-            return completions.items.map(item => {
-                const newLabel = modulePath ? `${modulePath}.${item.label}` : `${item.label}`;
-                const newItem = new vscode.CompletionItem(newLabel, item.kind);
-                return newItem;
+            const relevantKinds = [
+                vscode.CompletionItemKind.Module,
+                vscode.CompletionItemKind.Class,
+                vscode.CompletionItemKind.Function,
+                vscode.CompletionItemKind.Method
+            ];
+            console.log(`Hydra Helper: Found ${completions.items.length} completion items from Pylance.`);
+            // print all completion kinds for debugging
+            const kindCounts: { [key: number]: number } = {};
+            completions.items.forEach(item => {
+                if (item.kind !== undefined) {
+                    kindCounts[item.kind] = (kindCounts[item.kind] || 0) + 1;
+                }
             });
+            console.log('Hydra Helper: Completion item kinds distribution:', kindCounts);
+            console.log(`Hydra Helper: Filtering completion items...`);
+            return completions.items
+                // .filter(item => item.kind && relevantKinds.includes(item.kind))
+                .map(item => {
+                    const shortLabel = typeof item.label === 'string' ? item.label : item.label.label;
+                    const fullPath = modulePath ? `${modulePath}.${shortLabel}` : shortLabel;
+                    const newItem = new vscode.CompletionItem(item.label, item.kind);
+                    newItem.insertText = fullPath;
+                    newItem.detail = item.detail;
+                    newItem.documentation = item.documentation;
+                    newItem.sortText = item.sortText;
+                    newItem.filterText = fullPath;
+                    newItem.preselect = item.preselect;
+                    newItem.commitCharacters = item.commitCharacters;
+                    newItem.command = item.command;
+                    newItem.tags = item.tags;
+                    return newItem;
+                });
         } catch (error) {
             await helper.cleanup();
             console.error('Hydra Helper: Error during import completion.', error);
