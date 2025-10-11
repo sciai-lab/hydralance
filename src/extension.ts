@@ -262,30 +262,6 @@ function isAtKeyPosition(line: string, position: number): boolean {
     return isKey;
 }
 
-// --- Utility: Signature help integration for parameter completion ---
-function createPythonSignatureCode(target: string): { code: string, callPosition: number } {
-    const { code: importCode} = createPythonImportCode(target);
-    const parts = target.split('.');
-    
-    console.log(`Hydra Helper: Creating signature code for target: ${target}`);
-    console.log(`Hydra Helper: Import code: ${importCode}`);
-    
-    if (parts.length < 2) {
-        const code = `${importCode}\n${target}(`;
-        console.log(`Hydra Helper: Simple case - final code: "${code}"`);
-        return { code, callPosition: code.length - 1 };
-    }
-    
-    // For torch.nn.Linear, we want: from torch.nn import Linear; Linear(
-    const functionName = parts[parts.length - 1];
-    const code = `${importCode}\n${functionName}(`;
-    const callPosition = code.length - 1; // Position just inside the parentheses
-    
-    console.log(`Hydra Helper: Generated signature code: "${code}"`);
-    console.log(`Hydra Helper: Call position: ${callPosition}`);
-    
-    return { code, callPosition };
-}
 
 // Alternative approach: Use completion provider to get parameter information
 async function getParameterCompletionsViaCompletion(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
@@ -372,8 +348,6 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
 
 async function getParameterCompletions(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
     console.log(`Hydra Helper: Getting parameter completions for: ${target}`);
-    
-    // Try the completion provider approach first (might be more reliable)
     try {
         const completionResults = await getParameterCompletionsViaCompletion(target, existingSiblings);
         if (completionResults.length > 0) {
@@ -383,124 +357,9 @@ async function getParameterCompletions(target: string, existingSiblings: string[
     } catch (error) {
         console.log(`Hydra Helper: Completion provider approach failed:`, error);
     }
-    
-    // Fall back to signature help approach
-    console.log(`Hydra Helper: Trying signature help approach...`);
-    return getParameterCompletionsViaSignature(target, existingSiblings);
+    return [];
 }
 
-async function getParameterCompletionsViaSignature(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
-    const { code: pythonCode, callPosition } = createPythonSignatureCode(target);
-    
-    const helper = new PythonHelperDocument();
-    try {
-        await helper.write(pythonCode);
-        const fileUri = helper.getUri();
-        const doc = await vscode.workspace.openTextDocument(fileUri);
-        
-        // Give Pylance a moment to analyze the document
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        console.log(`Hydra Helper: Python code written to virtual document:`);
-        console.log(pythonCode);
-        
-        // Convert character position to line/character position
-        const lines = pythonCode.split('\n');
-        let line = 0;
-        let char = callPosition;
-        
-        // Find the correct line and character position
-        let currentPos = 0;
-        for (let i = 0; i < lines.length; i++) {
-            const lineLength = lines[i].length;
-            if (currentPos + lineLength >= callPosition) {
-                line = i;
-                char = callPosition - currentPos;
-                break;
-            }
-            currentPos += lineLength + 1; // +1 for newline
-        }
-        
-        const position = new vscode.Position(line, char);
-        console.log(`Hydra Helper: Requesting signature help at line ${line}, char ${char}`);
-        console.log(`Hydra Helper: Context around position: "${lines[line].substring(Math.max(0, char-5), char+5)}"`);
-        
-        console.log(`Hydra Helper: Getting signature help for target: ${target}`);
-        const signatureHelp = await vscode.commands.executeCommand<vscode.SignatureHelp>(
-            'vscode.executeSignatureHelpProvider',
-            fileUri,
-            position
-        );
-        
-        await helper.cleanup();
-        
-        if (!signatureHelp || signatureHelp.signatures.length === 0) {
-            console.log(`Hydra Helper: No signature help found for ${target}`);
-            console.log(`Hydra Helper: Signature help result:`, signatureHelp);
-            
-            // Let's also try a different approach - test if the import actually works
-            const testHelper = new PythonHelperDocument();
-            try {
-                const testCode = `${pythonCode.split('\n')[0]}\nprint("Import successful")`;
-                await testHelper.write(testCode);
-                console.log(`Hydra Helper: Testing import with code: ${testCode}`);
-            } catch (testError) {
-                console.log(`Hydra Helper: Import test failed:`, testError);
-            }
-            await testHelper.cleanup();
-            
-            return [];
-        }
-        
-        const signature = signatureHelp.signatures[0];
-        console.log(`Hydra Helper: Found signature with ${signature.parameters.length} parameters`);
-        
-        return signature.parameters
-            .filter(param => {
-                // Extract parameter name (handle different formats)
-                let paramName: string;
-                if (typeof param.label === 'string') {
-                    paramName = param.label.split(':')[0].trim();
-                } else {
-                    // param.label is [number, number] representing start and end positions in signature
-                    // We need to extract the text from the signature itself
-                    const sigText = signature.label;
-                    const startPos = param.label[0];
-                    const endPos = param.label[1];
-                    paramName = sigText.substring(startPos, endPos).split(':')[0].trim();
-                }
-                
-                // Filter out 'self', 'cls', and already existing siblings
-                return paramName !== 'self' && 
-                       paramName !== 'cls' && 
-                       !existingSiblings.includes(paramName);
-            })
-            .map(param => {
-                let paramName: string;
-                if (typeof param.label === 'string') {
-                    paramName = param.label.split(':')[0].trim();
-                } else {
-                    // param.label is [number, number] representing start and end positions in signature
-                    const sigText = signature.label;
-                    const startPos = param.label[0];
-                    const endPos = param.label[1];
-                    paramName = sigText.substring(startPos, endPos).split(':')[0].trim();
-                }
-                
-                const item = new vscode.CompletionItem(paramName, vscode.CompletionItemKind.Property);
-                item.detail = `Parameter of ${target}`;
-                item.documentation = param.documentation;
-                item.insertText = `${paramName}: `;
-                item.sortText = `0${paramName}`; // Sort parameters higher than other completions
-                return item;
-            });
-            
-    } catch (error) {
-        await helper.cleanup();
-        console.error(`Hydra Helper: Error getting parameter completions for ${target}:`, error);
-        return [];
-    }
-}
 
 // This function is called when the extension is activated.
 export async function activate(context: vscode.ExtensionContext) {
