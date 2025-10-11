@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { Uri } from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -132,16 +131,6 @@ function createPythonImportCode(target: string): { code: string, symbol: string,
             type: 'import'
         };
     }
-
-    // module.class.method or deeper
-    const modulePath = parts.slice(0, -2).join('.');
-    const className = parts[parts.length - 2];
-    const methodName = parts[parts.length - 1];
-    return {
-        code: `${modulePath ? `from ${modulePath} import ${className}` : `import ${className}`}; ${className}.${methodName}`,
-        symbol: methodName,
-        type: 'method'
-    };
 }
 
 // --- Utility: Test if Pyright is ready by resolving a known symbol ---
@@ -170,6 +159,220 @@ async function testPyrightReady(): Promise<boolean> {
     } catch (error) {
         await helper.cleanup();
         return false;
+    }
+}
+
+// --- Utility: YAML context parsing for parameter detection ---
+interface YamlContext {
+    isParameterContext: boolean;
+    targetValue?: string;
+    indentLevel: number;
+    existingSiblings: string[];
+}
+
+function parseYamlContext(document: vscode.TextDocument, position: vscode.Position): YamlContext {
+    const lines = document.getText().split(/\r?\n/);
+    const currentLine = lines[position.line];
+    const currentIndent = getIndentLevel(currentLine);
+    
+    console.log(`Hydra Helper: Parsing YAML context at line ${position.line}, indent ${currentIndent}`);
+    
+    // Find _target_ at the same indentation level
+    let targetValue: string | undefined;
+    const existingSiblings: string[] = [];
+    
+    // Look backwards and forwards from current position to find siblings
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineIndent = getIndentLevel(line);
+        
+        // Skip empty lines and comments
+        if (line.trim() === '' || line.trim().startsWith('#')) {
+            continue;
+        }
+        
+        // If we hit a line with less indentation, we're out of the current block
+        if (lineIndent < currentIndent && line.trim() !== '') {
+            if (i > position.line) {
+                break; // We've moved to the next block
+            }
+            continue;
+        }
+        
+        // Only consider lines at the same indentation level
+        if (lineIndent === currentIndent) {
+            const keyMatch = line.match(/^\s*([^:]+):\s*(.*)/);
+            if (keyMatch) {
+                const key = keyMatch[1].trim();
+                const value = keyMatch[2].trim();
+                
+                if (key === '_target_') {
+                    // Remove quotes if present
+                    targetValue = value.replace(/^['"]|['"]$/g, '');
+                    console.log(`Hydra Helper: Found _target_: ${targetValue}`);
+                } else if (i !== position.line) {
+                    // Add to existing siblings (don't include current line)
+                    existingSiblings.push(key);
+                }
+            }
+        }
+    }
+    
+    console.log(`Hydra Helper: Found ${existingSiblings.length} existing siblings: ${existingSiblings.join(', ')}`);
+    
+    return {
+        isParameterContext: !!targetValue,
+        targetValue,
+        indentLevel: currentIndent,
+        existingSiblings
+    };
+}
+
+function getIndentLevel(line: string): number {
+    const match = line.match(/^(\s*)/);
+    return match ? match[1].length : 0;
+}
+
+function isAtKeyPosition(line: string, position: number): boolean {
+    // Check if cursor is at the start of a key (not in a value)
+    const beforeCursor = line.substring(0, position);
+    const afterCursor = line.substring(position);
+    const colonIndex = beforeCursor.lastIndexOf(':');
+    
+    console.log(`Hydra Helper: Checking key position. Before: "${beforeCursor}", After: "${afterCursor}"`);
+    
+    if (colonIndex === -1) {
+        // No colon before cursor, we're likely typing a key
+        console.log('Hydra Helper: No colon found, assuming key position');
+        return true;
+    }
+    
+    // Check if there's non-whitespace after the colon
+    const afterColon = line.substring(colonIndex + 1);
+    const isKey = afterColon.trim() === '';
+    console.log(`Hydra Helper: After colon: "${afterColon}", is key position: ${isKey}`);
+    
+    // Also check if we're at the beginning of a new line (indented)
+    const trimmedBefore = beforeCursor.trim();
+    if (trimmedBefore === '' && afterCursor.trim() !== '') {
+        console.log('Hydra Helper: At beginning of indented line');
+        return true;
+    }
+    
+    return isKey;
+}
+
+// --- Utility: Signature help integration for parameter completion ---
+function createPythonSignatureCode(target: string): { code: string, callPosition: number } {
+    const { code: importCode } = createPythonImportCode(target);
+    const parts = target.split('.');
+    
+    if (parts.length < 2) {
+        return { code: `${importCode}\n${target}(`, callPosition: importCode.length + 1 + target.length + 1 };
+    }
+    
+    // Check if it's a class method or regular function/class
+    const secondLast = parts[parts.length - 2];
+    if (secondLast[0] === secondLast[0].toUpperCase()) {
+        // Class method - we need to instantiate the class first
+        const className = secondLast;
+        const methodName = parts[parts.length - 1];
+        const code = `${importCode}\ninstance = ${className}()\ninstance.${methodName}(`;
+        const callPosition = code.length - 1; // Position just inside the parentheses
+        return { code, callPosition };
+    } else {
+        // Regular function or class constructor
+        const functionName = parts[parts.length - 1];
+        const code = `${importCode}\n${functionName}(`;
+        const callPosition = code.length - 1; // Position just inside the parentheses
+        return { code, callPosition };
+    }
+}
+
+async function getParameterCompletions(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
+    const { code: pythonCode, callPosition } = createPythonSignatureCode(target);
+    
+    const helper = new PythonHelperDocument();
+    try {
+        await helper.write(pythonCode);
+        const fileUri = helper.getUri();
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        
+        // Convert character position to line/character position
+        const lines = pythonCode.split('\n');
+        let line = 0;
+        let char = callPosition;
+        for (let i = 0; i < lines.length; i++) {
+            if (char <= lines[i].length) {
+                line = i;
+                break;
+            }
+            char -= lines[i].length + 1; // +1 for newline
+        }
+        
+        const position = new vscode.Position(line, char);
+        
+        console.log(`Hydra Helper: Getting signature help for target: ${target}`);
+        const signatureHelp = await vscode.commands.executeCommand<vscode.SignatureHelp>(
+            'vscode.executeSignatureHelpProvider',
+            fileUri,
+            position
+        );
+        
+        await helper.cleanup();
+        
+        if (!signatureHelp || signatureHelp.signatures.length === 0) {
+            console.log(`Hydra Helper: No signature help found for ${target}`);
+            return [];
+        }
+        
+        const signature = signatureHelp.signatures[0];
+        console.log(`Hydra Helper: Found signature with ${signature.parameters.length} parameters`);
+        
+        return signature.parameters
+            .filter(param => {
+                // Extract parameter name (handle different formats)
+                let paramName: string;
+                if (typeof param.label === 'string') {
+                    paramName = param.label.split(':')[0].trim();
+                } else {
+                    // param.label is [number, number] representing start and end positions in signature
+                    // We need to extract the text from the signature itself
+                    const sigText = signature.label;
+                    const startPos = param.label[0];
+                    const endPos = param.label[1];
+                    paramName = sigText.substring(startPos, endPos).split(':')[0].trim();
+                }
+                
+                // Filter out 'self', 'cls', and already existing siblings
+                return paramName !== 'self' && 
+                       paramName !== 'cls' && 
+                       !existingSiblings.includes(paramName);
+            })
+            .map(param => {
+                let paramName: string;
+                if (typeof param.label === 'string') {
+                    paramName = param.label.split(':')[0].trim();
+                } else {
+                    // param.label is [number, number] representing start and end positions in signature
+                    const sigText = signature.label;
+                    const startPos = param.label[0];
+                    const endPos = param.label[1];
+                    paramName = sigText.substring(startPos, endPos).split(':')[0].trim();
+                }
+                
+                const item = new vscode.CompletionItem(paramName, vscode.CompletionItemKind.Property);
+                item.detail = `Parameter of ${target}`;
+                item.documentation = param.documentation;
+                item.insertText = `${paramName}: `;
+                item.sortText = `0${paramName}`; // Sort parameters higher than other completions
+                return item;
+            });
+            
+    } catch (error) {
+        await helper.cleanup();
+        console.error(`Hydra Helper: Error getting parameter completions for ${target}:`, error);
+        return [];
     }
 }
 
@@ -210,11 +413,10 @@ export async function activate(context: vscode.ExtensionContext) {
     const completionProvider = vscode.languages.registerCompletionItemProvider(
         { language: 'yaml' },
         new HydraCompletionItemProvider(),
-        ':',
-        '.', 
-        // Trigger on dot for module path completion
-        // '"', // Trigger on quote for new import
-        // '\'' // Trigger on single quote
+        ':', // Trigger after colon for _target_ values
+        '.', // Trigger on dot for module path completion
+        ' ', // Trigger on space (for parameter completion after colon)
+        '\n' // Trigger on newline for parameter keys
     );
     context.subscriptions.push(completionProvider);
 
@@ -266,7 +468,6 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
                 positionInVirtualDoc
             );
             
-            // Cleanup is optional with in-memory documents, but we'll do it to be tidy
             await helper.cleanup();
             
             if (locations && locations.length > 0) {
@@ -293,12 +494,25 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
     ): Promise<vscode.CompletionItem[] | undefined> {
         console.log(`Hydra Helper: Completion provider triggered. Reason: ${context.triggerKind}`);
         const lineText = document.lineAt(position.line).text;
+        
+        // Check for _target_ completion (existing functionality)
         const targetMatch = lineText.match(/_target_:\s*(['"]?)([\w\.]*)/);
-        if (!targetMatch) {
-            return undefined;
+        if (targetMatch) {
+            const query = targetMatch[2] || '';
+            return this.getImportCompletions(query);
         }
-        const query = targetMatch[2] || '';
-        return this.getImportCompletions(query);
+        
+        // Check for parameter completion (new functionality)
+        const yamlContext = parseYamlContext(document, position);
+        if (yamlContext.isParameterContext && yamlContext.targetValue) {
+            // Check if we're at a position where we should suggest parameter names
+            if (isAtKeyPosition(lineText, position.character)) {
+                console.log(`Hydra Helper: Providing parameter completions for target: ${yamlContext.targetValue}`);
+                return await getParameterCompletions(yamlContext.targetValue, yamlContext.existingSiblings);
+            }
+        }
+        
+        return undefined;
     }
 
     /**
