@@ -184,24 +184,23 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     let parentLineNum = -1;
     
     // Traverse upwards to find the parent key
-    if (currentLine.trim().startsWith('-')) {
-        for (let i = position.line - 1; i >= 0; i--) {
-            const line = lines[i];
-            if (line.trim() === '') {
-                continue;
+    for (let i = position.line - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.trim() === '') {
+            continue;
+        }
+        const lineIndent = getIndentLevel(line);
+        console.log(`Hydra Helper: indent ${lineIndent}, ${line}`);
+        if (lineIndent < currentIndent) {
+            const keyMatch = line.match(/^\s*([^:]+):\s*(.*)/);
+            if (keyMatch) {
+                parentKey = keyMatch[1].trim();
+                parentLineNum = i;
             }
-            const lineIndent = getIndentLevel(line);
-            if (lineIndent < currentIndent) {
-                const keyMatch = line.match(/^\s*([^:]+):\s*(.*)/);
-                if (keyMatch) {
-                    parentKey = keyMatch[1].trim();
-                    parentLineNum = i;
-                }
-                if (parentKey === 'defaults:' && lineIndent === 0) {
-                    isInDefaultsList = true;
-                }
-                break; // Found parent block
+            if (parentKey === 'defaults' && lineIndent === 0) {
+                isInDefaultsList = true;
             }
+            break; // Found parent block
         }
     }
     
@@ -289,6 +288,76 @@ function isAtKeyPosition(line: string, position: number): boolean {
     }
     
     return isKey;
+}
+
+
+// --- Utility: Parse a line from the defaults list ---
+interface DefaultsConfig {
+    type: 'config';
+    configGroup?: string;
+    configName: string;
+    package?: string;
+}
+
+interface DefaultsGroupDefault {
+    type: 'group_default';
+    optional: boolean;
+    override: boolean;
+    configGroup: string;
+    package?: string;
+    option: string | string[] | null;
+}
+
+type DefaultsEntry = DefaultsConfig | DefaultsGroupDefault;
+
+function parseDefaultsListEntry(line: string): DefaultsEntry | undefined {
+    line = line.trim().substring(1).trim(); // Remove '-' and trim whitespace
+
+    // Regex for GROUP_DEFAULT: [optional|override]? CONFIG_GROUP(@PACKAGE)?: OPTION
+    const groupDefaultRegex = /^(optional\s+|override\s+)?([\w\/]+)(@[\w_]+)?:\s*(.*)$/;
+    const groupDefaultMatch = line.match(groupDefaultRegex);
+
+    if (groupDefaultMatch) {
+        const optional = groupDefaultMatch[1]?.includes('optional') || false;
+        const override = groupDefaultMatch[1]?.includes('override') || false;
+        const configGroup = groupDefaultMatch[2];
+        const pkg = groupDefaultMatch[3]?.substring(1);
+        let option: string | string[] | null = groupDefaultMatch[4].trim();
+
+        if (option === 'null') {
+            option = null;
+        } else if (option.startsWith('[') && option.endsWith(']')) {
+            option = option.substring(1, option.length - 1).split(',').map(s => s.trim());
+        }
+
+        return {
+            type: 'group_default',
+            optional,
+            override,
+            configGroup,
+            package: pkg,
+            option
+        };
+    }
+
+    // Regex for CONFIG: (CONFIG_GROUP/)?CONFIG_NAME(@PACKAGE)?
+    const configRegex = /^(([\w\/]+)\/)?([\w_]+)(@[\w_]+)?$/;
+    const configMatch = line.match(configRegex);
+
+    if (configMatch) {
+        const configGroup = configMatch[2];
+        const configName = configMatch[3];
+        const pkg = configMatch[4]?.substring(1);
+
+        return {
+            type: 'config',
+            configGroup,
+            configName,
+            package: pkg
+        };
+    }
+
+    return undefined;
 }
 
 
@@ -463,8 +532,11 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         // Check for defaults list definition
         const yamlContext = parseYamlContext(document, position);
         if (yamlContext.isInDefaultsList) {
-            // TODO: Implement the logic to find and open the file
-            console.log("Defaults list context detected, but not yet implemented.");
+            const parsedEntry = parseDefaultsListEntry(lineText);
+            if (parsedEntry) {
+                console.log("Hydra Helper: Parsed defaults list entry:", parsedEntry);
+                return this.provideDefinitionForDefaults(document, parsedEntry);
+            }
         }
 
         return undefined;
@@ -507,6 +579,63 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
             console.error('Hydra Helper: An error occurred.', error);
             return undefined;
         }
+        return undefined;
+    }
+
+    private async provideDefinitionForDefaults(
+        document: vscode.TextDocument,
+        parsedEntry: DefaultsEntry
+    ): Promise<vscode.Definition | undefined> {
+        let relativePaths: string[] = [];
+
+        if (parsedEntry.type === 'group_default') {
+            if (parsedEntry.option && typeof parsedEntry.option === 'string') {
+                relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yaml`));
+                relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yml`));
+            }
+        } else if (parsedEntry.type === 'config') {
+            const configPath = parsedEntry.configGroup 
+                ? path.join(parsedEntry.configGroup, parsedEntry.configName)
+                : parsedEntry.configName;
+            relativePaths.push(`${configPath}.yaml`);
+            relativePaths.push(`${configPath}.yml`);
+        }
+
+        if (relativePaths.length === 0) {
+            return undefined;
+        }
+
+        console.log(`Hydra Helper: Potential relative paths: ${relativePaths.join(', ')}`);
+
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+        if (!workspaceFolder) {
+            return undefined;
+        }
+
+        let currentPath = path.dirname(document.uri.fsPath);
+        const workspaceRoot = workspaceFolder.uri.fsPath;
+
+        while (currentPath.startsWith(workspaceRoot)) {
+            for (const relativePath of relativePaths) {
+                const fullPath = path.join(currentPath, relativePath);
+                if (fs.existsSync(fullPath)) {
+                    console.log(`Hydra Helper: Found definition at: ${fullPath}`);
+                    const targetUri = vscode.Uri.file(fullPath);
+                    const targetPosition = new vscode.Position(0, 0);
+                    return new vscode.Location(targetUri, targetPosition);
+                }
+            }
+            
+            // Move one directory up
+            const parentPath = path.dirname(currentPath);
+            if (parentPath === currentPath) {
+                // Reached the root of the file system
+                break;
+            }
+            currentPath = parentPath;
+        }
+
+        console.log(`Hydra Helper: Could not find a definition for the defaults entry.`);
         return undefined;
     }
 }
