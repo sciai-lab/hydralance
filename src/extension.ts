@@ -297,6 +297,7 @@ interface DefaultsConfig {
     configGroup?: string;
     configName: string;
     package?: string;
+    valueRange: { start: number; end: number };
 }
 
 interface DefaultsGroupDefault {
@@ -306,13 +307,20 @@ interface DefaultsGroupDefault {
     configGroup: string;
     package?: string;
     option: string | string[] | null;
+    valueRange: { start: number; end: number };
 }
 
 type DefaultsEntry = DefaultsConfig | DefaultsGroupDefault;
 
 function parseDefaultsListEntry(line: string): DefaultsEntry | undefined {
-    line = line.trim().substring(1).trim(); // Remove '-' and trim whitespace
-
+    const originalLine = line;
+    
+    // Remove '-' trim whitespace and potential comments
+    line = line.split('#')[0].trim().substring(1).trim(); 
+    
+    // Calculate the offset to the start of the processed line within the original line
+    const lineStartOffset = originalLine.indexOf(line);
+    
     // Regex for GROUP_DEFAULT: [optional|override]? CONFIG_GROUP(@PACKAGE)?: OPTION
     const groupDefaultRegex = /^(optional\s+|override\s+)?([\w\/]+)(@[\w_]+)?:\s*(.*)$/;
     const groupDefaultMatch = line.match(groupDefaultRegex);
@@ -330,13 +338,25 @@ function parseDefaultsListEntry(line: string): DefaultsEntry | undefined {
             option = option.substring(1, option.length - 1).split(',').map(s => s.trim());
         }
 
+        // Calculate valueRange for the option part (after the colon)
+        const optionStart = line.indexOf(':') + 1;
+        const optionMatch = line.substring(optionStart).match(/\s*(.+)/);
+        let valueRangeStart = lineStartOffset + optionStart;
+        let valueRangeEnd = lineStartOffset + line.length;
+        
+        if (optionMatch) {
+            valueRangeStart = lineStartOffset + optionStart + optionMatch.index! + optionMatch[0].indexOf(optionMatch[1]);
+            valueRangeEnd = valueRangeStart + optionMatch[1].length;
+        }
+
         return {
             type: 'group_default',
             optional,
             override,
             configGroup,
             package: pkg,
-            option
+            option,
+            valueRange: { start: valueRangeStart, end: valueRangeEnd }
         };
     }
 
@@ -349,11 +369,21 @@ function parseDefaultsListEntry(line: string): DefaultsEntry | undefined {
         const configName = configMatch[3];
         const pkg = configMatch[4]?.substring(1);
 
+        // Calculate valueRange covering configGroup (if present) and configName
+        let valueRangeStart = lineStartOffset;
+        let valueRangeEnd = lineStartOffset + line.length;
+        
+        // If there's a package suffix, exclude it from the clickable range
+        if (configMatch[4]) {
+            valueRangeEnd = lineStartOffset + line.lastIndexOf(configMatch[4]);
+        }
+
         return {
             type: 'config',
             configGroup,
             configName,
-            package: pkg
+            package: pkg,
+            valueRange: { start: valueRangeStart, end: valueRangeEnd }
         };
     }
 
@@ -534,8 +564,11 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         if (yamlContext.isInDefaultsList) {
             const parsedEntry = parseDefaultsListEntry(lineText);
             if (parsedEntry) {
-                console.log("Hydra Helper: Parsed defaults list entry:", parsedEntry);
-                return this.provideDefinitionForDefaults(document, parsedEntry);
+                const pos = position.character;
+                if (pos >= parsedEntry.valueRange.start && pos <= parsedEntry.valueRange.end) {
+                    console.log("Hydra Helper: Parsed defaults list entry:", parsedEntry);
+                    return this.provideDefinitionForDefaults(document, parsedEntry);
+                }
             }
         }
 
