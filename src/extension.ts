@@ -306,10 +306,10 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
             return [];
         }
         
-        console.log(`Hydra Helper: Found ${completions.items.length} completion items`);
+        console.log(`Hydra Helper: Found ${completions.items.length} completion items (before filtering)`);
         completions.items.forEach(item => {
             const label = typeof item.label === 'string' ? item.label : item.label.label;
-            console.log(`Hydra Helper: Completion item: "${label}" (kind: ${item.kind})`);
+            // console.log(`Hydra Helper: Completion item: "${label}" (kind: ${item.kind})`);
         });
         
         // Filter for parameter-like completions
@@ -541,13 +541,13 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             ];
             console.log(`Hydra Helper: Found ${completions.items.length} completion items from Pylance.`);
             // print all completion kinds for debugging
-            const kindCounts: { [key: number]: number } = {};
-            completions.items.forEach(item => {
-                if (item.kind !== undefined) {
-                    kindCounts[item.kind] = (kindCounts[item.kind] || 0) + 1;
-                }
-            });
-            console.log('Hydra Helper: Completion item kinds distribution:', kindCounts);
+            // const kindCounts: { [key: number]: number } = {};
+            // completions.items.forEach(item => {
+            //     if (item.kind !== undefined) {
+            //         kindCounts[item.kind] = (kindCounts[item.kind] || 0) + 1;
+            //     }
+            // });
+            // console.log('Hydra Helper: Completion item kinds distribution:', kindCounts);
             console.log(`Hydra Helper: Filtering completion items...`);
             return completions.items
                 // .filter(item => item.kind && relevantKinds.includes(item.kind))
