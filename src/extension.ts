@@ -165,6 +165,7 @@ async function testPyrightReady(): Promise<boolean> {
 // --- Utility: YAML context parsing for parameter detection ---
 interface YamlContext {
     isParameterContext: boolean;
+    isInDefaultsList: boolean;
     targetValue?: string;
     indentLevel: number;
     existingSiblings: string[];
@@ -176,13 +177,40 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     const currentIndent = getIndentLevel(currentLine);
     
     console.log(`Hydra Helper: Parsing YAML context at line ${position.line}, indent ${currentIndent}`);
+
+    // Check if we are in a 'defaults' list
+    let isInDefaultsList = false;
+    let parentKey = undefined;
+    let parentLineNum = -1;
+    
+    // Traverse upwards to find the parent key
+    if (currentLine.trim().startsWith('-')) {
+        for (let i = position.line - 1; i >= 0; i--) {
+            const line = lines[i];
+            if (line.trim() === '') {
+                continue;
+            }
+            const lineIndent = getIndentLevel(line);
+            if (lineIndent < currentIndent) {
+                const keyMatch = line.match(/^\s*([^:]+):\s*(.*)/);
+                if (keyMatch) {
+                    parentKey = keyMatch[1].trim();
+                    parentLineNum = i;
+                }
+                if (parentKey === 'defaults:' && lineIndent === 0) {
+                    isInDefaultsList = true;
+                }
+                break; // Found parent block
+            }
+        }
+    }
     
     // Find _target_ at the same indentation level
     let targetValue: string | undefined;
     const existingSiblings: string[] = [];
     
     // Look backwards and forwards from current position to find siblings
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = parentLineNum + 1; i < lines.length; i++) {
         const line = lines[i];
         const lineIndent = getIndentLevel(line);
         
@@ -222,6 +250,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     
     return {
         isParameterContext: !!targetValue,
+        isInDefaultsList,
         targetValue,
         indentLevel: currentIndent,
         existingSiblings
@@ -422,14 +451,26 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         position: vscode.Position,
         token: vscode.CancellationToken
     ): Promise<vscode.Definition | undefined> {
-        console.log('Hydra Helper: provideDefinition method was triggered.');
         const lineText = document.lineAt(position.line).text;
-        const match = lineText.match(/_target_:\s*['"]?([\w\.]+)['"]?/);
-        if (!match) {
-            console.debug(`Hydra Helper: The regex did not find a _target_ on the line: "${lineText}"`);
-            return undefined;
+
+        // Check for _target_ definition
+        const targetMatch = lineText.match(/_target_:\s*['"]?([\w\.]+)['"]?/);
+        if (targetMatch) {
+            const classPath = targetMatch[1];
+            return this.provideDefinitionForTarget(classPath);
         }
-        const classPath = match[1];
+
+        // Check for defaults list definition
+        const yamlContext = parseYamlContext(document, position);
+        if (yamlContext.isInDefaultsList) {
+            // TODO: Implement the logic to find and open the file
+            console.log("Defaults list context detected, but not yet implemented.");
+        }
+
+        return undefined;
+    }
+
+    private async provideDefinitionForTarget(classPath: string): Promise<vscode.Definition | undefined> {
         console.debug(`Hydra Helper: Found potential class path: ${classPath}`);
         const { code: pythonCode, symbol, type } = createPythonImportCode(classPath);
         if (!pythonCode) {
