@@ -533,6 +533,13 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(completionProvider);
 
+    // Register our hover provider for YAML files
+    const hoverProvider = vscode.languages.registerHoverProvider(
+        { language: 'yaml' },
+        new HydraHoverProvider()
+    );
+    context.subscriptions.push(hoverProvider);
+
     console.log('Hydra Helper extension is now active!');
 
     // Ensure the shadow directory is in .gitignore if needed
@@ -542,6 +549,69 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Register linting diagnostics for _target_
     activateHydraLinting(context);
+}
+
+// Common function to find target path for defaults entries
+function findTargetPathForDefaults(
+    document: vscode.TextDocument,
+    parsedEntry: DefaultsEntry
+): { path: string; exists: boolean; fullPath?: string } | undefined {
+    let relativePaths: string[] = [];
+
+    if (parsedEntry.type === 'group_default') {
+        if (parsedEntry.option && typeof parsedEntry.option === 'string') {
+            relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yaml`));
+            relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yml`));
+        }
+    } else if (parsedEntry.type === 'config') {
+        const configPath = parsedEntry.configGroup 
+            ? path.join(parsedEntry.configGroup, parsedEntry.configName)
+            : parsedEntry.configName;
+        relativePaths.push(`${configPath}.yaml`);
+        relativePaths.push(`${configPath}.yml`);
+    }
+
+    if (relativePaths.length === 0) {
+        return undefined;
+    }
+
+    console.log(`Hydra Helper: Potential relative paths: ${relativePaths.join(', ')}`);
+
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!workspaceFolder) {
+        return undefined;
+    }
+
+    let currentPath = path.dirname(document.uri.fsPath);
+    const workspaceRoot = workspaceFolder.uri.fsPath;
+
+    while (currentPath.startsWith(workspaceRoot)) {
+        for (const relativePath of relativePaths) {
+            const fullPath = path.join(currentPath, relativePath);
+            if (fs.existsSync(fullPath)) {
+                // Return the relative path from workspace root for a cleaner display
+                return { 
+                    path: path.relative(workspaceRoot, fullPath), 
+                    exists: true,
+                    fullPath: fullPath
+                };
+            }
+        }
+        
+        // Move one directory up
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) {
+            // Reached the root of the file system
+            break;
+        }
+        currentPath = parentPath;
+    }
+
+    // If file doesn't exist, still show the expected path
+    return { 
+        path: relativePaths[0], 
+        exists: false 
+    };
 }
 
 class HydraDefinitionProvider implements vscode.DefinitionProvider {
@@ -619,56 +689,59 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         document: vscode.TextDocument,
         parsedEntry: DefaultsEntry
     ): Promise<vscode.Definition | undefined> {
-        let relativePaths: string[] = [];
-
-        if (parsedEntry.type === 'group_default') {
-            if (parsedEntry.option && typeof parsedEntry.option === 'string') {
-                relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yaml`));
-                relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yml`));
-            }
-        } else if (parsedEntry.type === 'config') {
-            const configPath = parsedEntry.configGroup 
-                ? path.join(parsedEntry.configGroup, parsedEntry.configName)
-                : parsedEntry.configName;
-            relativePaths.push(`${configPath}.yaml`);
-            relativePaths.push(`${configPath}.yml`);
-        }
-
-        if (relativePaths.length === 0) {
-            return undefined;
-        }
-
-        console.log(`Hydra Helper: Potential relative paths: ${relativePaths.join(', ')}`);
-
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-        if (!workspaceFolder) {
-            return undefined;
-        }
-
-        let currentPath = path.dirname(document.uri.fsPath);
-        const workspaceRoot = workspaceFolder.uri.fsPath;
-
-        while (currentPath.startsWith(workspaceRoot)) {
-            for (const relativePath of relativePaths) {
-                const fullPath = path.join(currentPath, relativePath);
-                if (fs.existsSync(fullPath)) {
-                    console.log(`Hydra Helper: Found definition at: ${fullPath}`);
-                    const targetUri = vscode.Uri.file(fullPath);
-                    const targetPosition = new vscode.Position(0, 0);
-                    return new vscode.Location(targetUri, targetPosition);
-                }
-            }
-            
-            // Move one directory up
-            const parentPath = path.dirname(currentPath);
-            if (parentPath === currentPath) {
-                // Reached the root of the file system
-                break;
-            }
-            currentPath = parentPath;
+        const targetInfo = findTargetPathForDefaults(document, parsedEntry);
+        if (targetInfo && targetInfo.exists && targetInfo.fullPath) {
+            console.log(`Hydra Helper: Found definition at: ${targetInfo.fullPath}`);
+            const targetUri = vscode.Uri.file(targetInfo.fullPath);
+            const targetPosition = new vscode.Position(0, 0);
+            return new vscode.Location(targetUri, targetPosition);
         }
 
         console.log(`Hydra Helper: Could not find a definition for the defaults entry.`);
+        return undefined;
+    }
+}
+
+class HydraHoverProvider implements vscode.HoverProvider {
+    public async provideHover(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        token: vscode.CancellationToken
+    ): Promise<vscode.Hover | undefined> {
+        const lineText = document.lineAt(position.line).text;
+
+        // Check for defaults list hover
+        const yamlContext = parseYamlContext(document, position);
+        if (yamlContext.isInDefaultsList) {
+            const parsedEntry = parseDefaultsListEntry(lineText);
+            if (parsedEntry) {
+                const pos = position.character;
+                if (pos >= parsedEntry.valueRange.start && pos <= parsedEntry.valueRange.end) {
+                    const targetInfo = findTargetPathForDefaults(document, parsedEntry);
+                    if (targetInfo) {
+                        const markdownString = new vscode.MarkdownString();
+                        
+                        // Show only the path with optional warning
+                        if (targetInfo.exists) {
+                            markdownString.appendCodeblock(targetInfo.path, 'text');
+                        } else {
+                            markdownString.appendCodeblock(`${targetInfo.path} [not found]`, 'text');
+                        }
+                        
+                        // Create hover range based on the parsed entry's value range
+                        const range = new vscode.Range(
+                            position.line,
+                            parsedEntry.valueRange.start,
+                            position.line,
+                            parsedEntry.valueRange.end + 1
+                        );
+                        
+                        return new vscode.Hover(markdownString, range);
+                    }
+                }
+            }
+        }
+
         return undefined;
     }
 }
