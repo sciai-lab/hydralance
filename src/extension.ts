@@ -229,32 +229,51 @@ class PythonHelperDocument {
 
 // --- Utility: Create Python import code for a Hydra _target_ string ---
 function createPythonImportCode(target: string): { code: string, symbol: string, type: 'import' | 'method' } {
+    ExtensionLogger.debug(`createPythonImportCode called with target: "${target}"`);
+    
     const parts = target.split('.');
+    ExtensionLogger.debug(`Split target into parts: [${parts.join(', ')}]`);
+    
     if (parts.length < 2) {
         // Not enough info to import
-        return { code: `import ${target}`, symbol: target, type: 'import' };
+        const result = { code: `import ${target}`, symbol: target, type: 'import' as const };
+        ExtensionLogger.debug(`Insufficient parts, returning simple import:`, result);
+        return result;
     }
+    
     // check if the second last part is uppercase, implying a method being autocompleted / linted
     const secondLast = parts[parts.length - 2];
+    ExtensionLogger.debug(`Second last part: "${secondLast}", first character: "${secondLast[0]}", is uppercase: ${secondLast[0] === secondLast[0].toUpperCase()}`);
+    
     if (secondLast[0] === secondLast[0].toUpperCase()) {
         // module.submodule.Class.method
         const modulePath = parts.slice(0, -2).join('.');
         const className = parts[parts.length - 2];
         const methodName = parts[parts.length - 1];
-        return {
+        
+        ExtensionLogger.debug(`Detected method pattern - modulePath: "${modulePath}", className: "${className}", methodName: "${methodName}"`);
+        
+        const result = {
             code: `${modulePath ? `from ${modulePath} import ${className}` : `import ${className}`}; ${className}.${methodName}`,
             symbol: methodName,
-            type: 'method'
+            type: 'method' as const
         };
+        ExtensionLogger.debug(`Generated method import code:`, result);
+        return result;
     } else {
         // module.submodule.function or module.submodule1.submodule2
         const modulePath = parts.slice(0, -1).join('.');
         const functionName = parts[parts.length - 1];
-        return {
+        
+        ExtensionLogger.debug(`Detected function pattern - modulePath: "${modulePath}", functionName: "${functionName}"`);
+        
+        const result = {
             code: `from ${modulePath} import ${functionName}`,
             symbol: functionName,
-            type: 'import'
+            type: 'import' as const
         };
+        ExtensionLogger.debug(`Generated function import code:`, result);
+        return result;
     }
 }
 
