@@ -131,23 +131,52 @@ async function collectDiagnosticInfo(): Promise<string> {
 // Uses VS Code's text document API instead of physical files for better performance
 class PythonHelperDocument {
     private shadowUri: vscode.Uri;
+    private workspaceFolder: vscode.WorkspaceFolder | undefined;
     private static helperCounter = 0;
 
-    constructor() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || workspaceFolders.length === 0) {
+    constructor(documentUri?: vscode.Uri) {
+        this.workspaceFolder = this.determineWorkspaceFolder(documentUri);
+
+        if (!this.workspaceFolder) {
             // Fallback: create a URI in a temporary location
             // Even without a workspace, we can use an untitled scheme or a temp path
             this.shadowUri = vscode.Uri.parse(`untitled:/.vscode/.pylance_shadow/hydra_stub_${PythonHelperDocument.helperCounter++}.py`);
+            ExtensionLogger.debug('Created shadow URI with untitled scheme (no workspace)');
         } else {
-            // Create shadow URI inside workspace's .vscode folder
+            // Create shadow URI inside the appropriate workspace's .vscode folder
             this.shadowUri = vscode.Uri.joinPath(
-                workspaceFolders[0].uri,
+                this.workspaceFolder.uri,
                 '.vscode',
                 '.pylance_shadow',
                 `hydra_stub_${PythonHelperDocument.helperCounter++}.py`
             );
+            ExtensionLogger.debug(`Created shadow URI in workspace folder: ${this.workspaceFolder.name}`);
         }
+    }
+
+    /**
+     * Determine the appropriate workspace folder for the given document URI
+     */
+    private determineWorkspaceFolder(documentUri?: vscode.Uri): vscode.WorkspaceFolder | undefined {
+        // Try to find workspace folder for the specific document
+        if (documentUri) {
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(documentUri);
+            if (workspaceFolder) {
+                ExtensionLogger.debug(`Found workspace folder '${workspaceFolder.name}' for document: ${documentUri.fsPath}`);
+                return workspaceFolder;
+            }
+        }
+        
+        // Fallback to first workspace folder if no specific folder found
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (workspaceFolders && workspaceFolders.length > 0) {
+            const fallbackFolder = workspaceFolders[0];
+            ExtensionLogger.debug(`Using fallback workspace folder: ${fallbackFolder.name}`);
+            return fallbackFolder;
+        }
+
+        ExtensionLogger.debug('No workspace folders available');
+        return undefined;
     }
 
     /**
@@ -173,6 +202,13 @@ class PythonHelperDocument {
     }
 
     /**
+     * Get the workspace folder that was used for this helper document
+     */
+    getWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
+        return this.workspaceFolder;
+    }
+
+    /**
      * Optional: Close the in-memory document.
      * Note: This is not strictly necessary as the document will be garbage collected,
      * but can be used for explicit cleanup.
@@ -190,14 +226,18 @@ class PythonHelperDocument {
 
     /**
      * Static method to ensure .vscode/.pylance_shadow is in .gitignore
+     * Now works with a specific workspace folder
      */
-    static async ensureGitignoreEntry(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || workspaceFolders.length === 0) {
-            return;
+    static async ensureGitignoreEntry(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
+        if (!workspaceFolder) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders || workspaceFolders.length === 0) {
+                return;
+            }
+            workspaceFolder = workspaceFolders[0];
         }
 
-        const workspacePath = workspaceFolders[0].uri.fsPath;
+        const workspacePath = workspaceFolder.uri.fsPath;
         if (!fs.existsSync(path.join(workspacePath, '.git'))) {
             return; // Not a git repo
         }
@@ -213,7 +253,7 @@ class PythonHelperDocument {
 
         if (!alreadyIgnored) {
             const answer = await vscode.window.showInformationMessage(
-                'The .vscode/.pylance_shadow folder is used for Hydra language support. Would you like to add it to your .gitignore?',
+                `The .vscode/.pylance_shadow folder is used for Hydra language support in workspace "${workspaceFolder.name}". Would you like to add it to your .gitignore?`,
                 'Yes', 'No'
             );
             if (answer === 'Yes') {
@@ -536,7 +576,7 @@ function parseDefaultsListEntry(line: string): DefaultsEntry | undefined {
 
 
 // Alternative approach: Use completion provider to get parameter information
-async function getParameterCompletionsViaCompletion(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
+async function getParameterCompletionsViaCompletion(target: string, existingSiblings: string[], documentUri?: vscode.Uri): Promise<vscode.CompletionItem[]> {
     const { code: importCode,symbol: functionOrClassName, type: import_or_method } = createPythonImportCode(target);
     const parts = target.split('.');
     const functionName = parts[parts.length - 1];
@@ -551,7 +591,7 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
         pythonCode = `${importCode}(`;
         position = new vscode.Position(0, pythonCode.length);
     }
-    const helper = new PythonHelperDocument();
+    const helper = new PythonHelperDocument(documentUri);
     try {
         await helper.write(pythonCode);
         const fileUri = helper.getUri();
@@ -618,10 +658,10 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
     }
 }
 
-async function getParameterCompletions(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
+async function getParameterCompletions(target: string, existingSiblings: string[], documentUri?: vscode.Uri): Promise<vscode.CompletionItem[]> {
     ExtensionLogger.log(`Hydra Helper: Getting parameter completions for: ${target}`);
     try {
-        const completionResults = await getParameterCompletionsViaCompletion(target, existingSiblings);
+        const completionResults = await getParameterCompletionsViaCompletion(target, existingSiblings, documentUri);
         if (completionResults.length > 0) {
             ExtensionLogger.log(`Hydra Helper: Success with completion provider approach: ${completionResults.length} parameters`);
             return completionResults;
@@ -709,10 +749,15 @@ export async function activate(context: vscode.ExtensionContext) {
 
     ExtensionLogger.log('Hydra Helper extension is now active!');
 
-    // Ensure the shadow directory is in .gitignore if needed
-    PythonHelperDocument.ensureGitignoreEntry().catch((err: Error) => {
-        ExtensionLogger.error('Error ensuring gitignore entry:', err);
-    });
+    // Ensure the shadow directory is in .gitignore if needed for all workspace folders
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders) {
+        for (const folder of workspaceFolders) {
+            PythonHelperDocument.ensureGitignoreEntry(folder).catch((err: Error) => {
+                ExtensionLogger.error(`Error ensuring gitignore entry for ${folder.name}:`, err);
+            });
+        }
+    }
 
     // Register linting diagnostics for _target_
     activateHydraLinting(context);
@@ -793,7 +838,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         const targetMatch = lineText.match(/_target_:\s*['"]?([\w\.]+)['"]?/);
         if (targetMatch) {
             const classPath = targetMatch[1];
-            return this.provideDefinitionForTarget(classPath);
+            return this.provideDefinitionForTarget(classPath, document.uri);
         }
 
         // Check for defaults list definition
@@ -812,7 +857,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         return undefined;
     }
 
-    private async provideDefinitionForTarget(classPath: string): Promise<vscode.Definition | undefined> {
+    private async provideDefinitionForTarget(classPath: string, documentUri?: vscode.Uri): Promise<vscode.Definition | undefined> {
         console.debug(`Hydra Helper: Found potential class path: ${classPath}`);
         const { code: pythonCode, symbol, type } = createPythonImportCode(classPath);
         if (!pythonCode) {
@@ -821,7 +866,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
         console.debug(`Hydra Helper: Created virtual Python code: "${pythonCode}"`);
         
         // Use the in-memory PythonHelperDocument
-        const helper = new PythonHelperDocument();
+        const helper = new PythonHelperDocument(documentUri);
         try {
             await helper.write(pythonCode);
             const fileUri = helper.getUri();
@@ -933,7 +978,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                 new vscode.Position(position.line, targetStartIndex),
                 new vscode.Position(position.line, targetStartIndex + query.length)
             );
-            return this.getImportCompletions(query, targetRange, quoteChar);
+            return this.getImportCompletions(query, targetRange, quoteChar, document.uri);
         }
         
         // Check for parameter completion (new functionality)
@@ -942,7 +987,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             // Check if we're at a position where we should suggest parameter names
             if (isAtKeyPosition(lineText, position.character)) {
                 ExtensionLogger.log(`Hydra Helper: Providing parameter completions for target: ${yamlContext.targetValue}`);
-                return await getParameterCompletions(yamlContext.targetValue, yamlContext.existingSiblings);
+                return await getParameterCompletions(yamlContext.targetValue, yamlContext.existingSiblings, document.uri);
             }
         }
         
@@ -953,14 +998,14 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
      * Provides completions by simulating a Python import statement.
      * This now handles both top-level packages and sub-modules.
      */
-    private async getImportCompletions(query: string, targetRange: vscode.Range, quoteChar: string = ''): Promise<vscode.CompletionItem[]> {
+    private async getImportCompletions(query: string, targetRange: vscode.Range, quoteChar: string = '', documentUri?: vscode.Uri): Promise<vscode.CompletionItem[]> {
         const { code: pythonCode, symbol, type } = createPythonImportCode(query);
         if (!pythonCode) {
             return [];
         }
         ExtensionLogger.log(`Hydra Helper: Created virtual Python code for completion: "${pythonCode}"`);
         
-        const helper = new PythonHelperDocument();
+        const helper = new PythonHelperDocument(documentUri);
         try {
             await helper.write(pythonCode);
             const fileUri = helper.getUri();
@@ -1077,7 +1122,7 @@ async function lintDocument(document: vscode.TextDocument, diagnostics: vscode.D
             if (!pythonCode) {
                 continue;
             }
-            const helper = new PythonHelperDocument();
+            const helper = new PythonHelperDocument(document.uri);
             let found = false;
             try {
                 await helper.write(pythonCode);
