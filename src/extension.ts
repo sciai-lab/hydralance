@@ -1,6 +1,130 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+
+
+// Extension-wide output channel for better user debugging
+let outputChannel: vscode.OutputChannel;
+
+// Enhanced logging utility with log storage
+class ExtensionLogger {
+    private static logs: string[] = [];
+    private static maxLogs = 1000; // Keep last 1000 log entries
+    
+    static log(message: string, data?: any) {
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] ${message}`;
+        const fullMessage = logMessage + (data ? ` ${JSON.stringify(data)}` : '');
+        
+        // Store log entry
+        this.logs.push(fullMessage);
+        if (this.logs.length > this.maxLogs) {
+            this.logs.shift(); // Remove oldest log
+        }
+        
+        // Log to both console and output channel
+        console.log(logMessage, data || '');
+        if (outputChannel) {
+            outputChannel.appendLine(fullMessage);
+        }
+    }
+    
+    static error(message: string, error?: any) {
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] ERROR: ${message}`;
+        const fullMessage = logMessage + (error ? ` ${error}` : '');
+        
+        // Store log entry
+        this.logs.push(fullMessage);
+        if (this.logs.length > this.maxLogs) {
+            this.logs.shift();
+        }
+        
+        console.error(logMessage, error || '');
+        if (outputChannel) {
+            outputChannel.appendLine(fullMessage);
+            outputChannel.show(); // Show output panel on errors
+        }
+    }
+    
+    static debug(message: string, data?: any) {
+        const timestamp = new Date().toISOString();
+        const logMessage = `[${timestamp}] DEBUG: ${message}`;
+        const fullMessage = logMessage + (data ? ` ${JSON.stringify(data)}` : '');
+        
+        // Store log entry
+        this.logs.push(fullMessage);
+        if (this.logs.length > this.maxLogs) {
+            this.logs.shift();
+        }
+        
+        console.debug(logMessage, data || '');
+        if (outputChannel) {
+            outputChannel.appendLine(fullMessage);
+        }
+    }
+    
+    static show() {
+        if (outputChannel) {
+            outputChannel.show();
+        }
+    }
+    
+    static getAllLogs(): string[] {
+        return [...this.logs]; // Return copy to prevent external modification
+    }
+}
+
+// Collect diagnostic information for debugging user issues
+async function collectDiagnosticInfo(): Promise<string> {
+    const info: any = {
+        timestamp: new Date().toISOString(),
+        vscode: {
+            version: vscode.version,
+            language: vscode.env.language,
+            machineId: vscode.env.machineId.substring(0, 8) + '...' // Partial for privacy
+        },
+        system: {
+            platform: os.platform(),
+            arch: os.arch(),
+            release: os.release(),
+            nodeVersion: process.version
+        },
+        workspace: {
+            folders: vscode.workspace.workspaceFolders?.map(f => ({
+                name: f.name,
+                scheme: f.uri.scheme
+            })) || [],
+            openDocuments: vscode.workspace.textDocuments.length
+        },
+        extensions: {
+            pylance: {
+                installed: !!vscode.extensions.getExtension('ms-python.vscode-pylance'),
+                active: vscode.extensions.getExtension('ms-python.vscode-pylance')?.isActive || false,
+                version: vscode.extensions.getExtension('ms-python.vscode-pylance')?.packageJSON.version || 'unknown'
+            },
+            python: {
+                installed: !!vscode.extensions.getExtension('ms-python.python'),
+                active: vscode.extensions.getExtension('ms-python.python')?.isActive || false,
+                version: vscode.extensions.getExtension('ms-python.python')?.packageJSON.version || 'unknown'
+            },
+            totalInstalled: vscode.extensions.all.length,
+            activeExtensions: vscode.extensions.all
+                .filter(ext => ext.isActive)
+                .map(ext => ({
+                    id: ext.id,
+                    version: ext.packageJSON.version
+                }))
+        },
+        hydralance: {
+            pyrightReady: await testPyrightReady()
+        },
+        logs: ExtensionLogger.getAllLogs()
+    };
+
+    return JSON.stringify(info, null, 2);
+}
 
 
 // Utility class to manage in-memory Python helper documents
@@ -39,6 +163,7 @@ class PythonHelperDocument {
             await vscode.workspace.applyEdit(edit);
         } catch (err) {
             console.error('Hydra Helper: Error writing in-memory document:', err);
+            ExtensionLogger.error('Error writing in-memory document:', err);
             throw err;
         }
     }
@@ -176,7 +301,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     const currentLine = lines[position.line];
     const currentIndent = getIndentLevel(currentLine);
     
-    console.log(`Hydra Helper: Parsing YAML context at line ${position.line}, indent ${currentIndent}`);
+    ExtensionLogger.debug(`Parsing YAML context at line ${position.line}, indent ${currentIndent}`);
 
     // Check if we are in a 'defaults' list
     let isInDefaultsList = false;
@@ -190,7 +315,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
             continue;
         }
         const lineIndent = getIndentLevel(line);
-        console.log(`Hydra Helper: indent ${lineIndent}, ${line}`);
+        ExtensionLogger.log(`Hydra Helper: indent ${lineIndent}, ${line}`);
         if (lineIndent < currentIndent) {
             const keyMatch = line.match(/^\s*([^:]+):\s*(.*)/);
             if (keyMatch) {
@@ -236,7 +361,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
                 if (key === '_target_') {
                     // Remove quotes if present
                     targetValue = value.replace(/^['"]|['"]$/g, '');
-                    console.log(`Hydra Helper: Found _target_: ${targetValue}`);
+                    ExtensionLogger.log(`Hydra Helper: Found _target_: ${targetValue}`);
                 } else if (i !== position.line) {
                     // Add to existing siblings (don't include current line)
                     existingSiblings.push(key);
@@ -245,7 +370,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
         }
     }
     
-    console.log(`Hydra Helper: Found ${existingSiblings.length} existing siblings: ${existingSiblings.join(', ')}`);
+    ExtensionLogger.log(`Hydra Helper: Found ${existingSiblings.length} existing siblings: ${existingSiblings.join(', ')}`);
     
     return {
         isParameterContext: !!targetValue,
@@ -267,23 +392,23 @@ function isAtKeyPosition(line: string, position: number): boolean {
     const afterCursor = line.substring(position);
     const colonIndex = beforeCursor.lastIndexOf(':');
     
-    console.log(`Hydra Helper: Checking key position. Before: "${beforeCursor}", After: "${afterCursor}"`);
+    ExtensionLogger.log(`Hydra Helper: Checking key position. Before: "${beforeCursor}", After: "${afterCursor}"`);
     
     if (colonIndex === -1) {
         // No colon before cursor, we're likely typing a key
-        console.log('Hydra Helper: No colon found, assuming key position');
+        ExtensionLogger.log('Hydra Helper: No colon found, assuming key position');
         return true;
     }
     
     // Check if there's non-whitespace after the colon
     const afterColon = line.substring(colonIndex + 1);
     const isKey = afterColon.trim() === '';
-    console.log(`Hydra Helper: After colon: "${afterColon}", is key position: ${isKey}`);
+    ExtensionLogger.log(`Hydra Helper: After colon: "${afterColon}", is key position: ${isKey}`);
     
     // Also check if we're at the beginning of a new line (indented)
     const trimmedBefore = beforeCursor.trim();
     if (trimmedBefore === '' && afterCursor.trim() !== '') {
-        console.log('Hydra Helper: At beginning of indented line');
+        ExtensionLogger.log('Hydra Helper: At beginning of indented line');
         return true;
     }
     
@@ -416,8 +541,8 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
         // Give Pylance a moment to analyze
         // await new Promise(resolve => setTimeout(resolve, 300));
         
-        console.log(`Hydra Helper: Trying completion approach for: ${target}`);
-        console.log(`Hydra Helper: Code: ${pythonCode}`);
+        ExtensionLogger.log(`Hydra Helper: Trying completion approach for: ${target}`);
+        ExtensionLogger.log(`Hydra Helper: Code: ${pythonCode}`);
         
         // Position cursor right after the opening parenthesis
         
@@ -430,14 +555,14 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
         await helper.cleanup();
         
         if (!completions) {
-            console.log(`Hydra Helper: No completions found via completion provider`);
+            ExtensionLogger.log(`Hydra Helper: No completions found via completion provider`);
             return [];
         }
         
-        console.log(`Hydra Helper: Found ${completions.items.length} completion items (before filtering)`);
+        ExtensionLogger.log(`Hydra Helper: Found ${completions.items.length} completion items (before filtering)`);
         completions.items.forEach(item => {
             const label = typeof item.label === 'string' ? item.label : item.label.label;
-            // console.log(`Hydra Helper: Completion item: "${label}" (kind: ${item.kind})`);
+            // ExtensionLogger.log(`Hydra Helper: Completion item: "${label}" (kind: ${item.kind})`);
         });
         
         // Filter for parameter-like completions
@@ -475,15 +600,15 @@ async function getParameterCompletionsViaCompletion(target: string, existingSibl
 }
 
 async function getParameterCompletions(target: string, existingSiblings: string[]): Promise<vscode.CompletionItem[]> {
-    console.log(`Hydra Helper: Getting parameter completions for: ${target}`);
+    ExtensionLogger.log(`Hydra Helper: Getting parameter completions for: ${target}`);
     try {
         const completionResults = await getParameterCompletionsViaCompletion(target, existingSiblings);
         if (completionResults.length > 0) {
-            console.log(`Hydra Helper: Success with completion provider approach: ${completionResults.length} parameters`);
+            ExtensionLogger.log(`Hydra Helper: Success with completion provider approach: ${completionResults.length} parameters`);
             return completionResults;
         }
     } catch (error) {
-        console.log(`Hydra Helper: Completion provider approach failed:`, error);
+        ExtensionLogger.log(`Hydra Helper: Completion provider approach failed:`, error);
     }
     return [];
 }
@@ -491,11 +616,16 @@ async function getParameterCompletions(target: string, existingSiblings: string[
 
 // This function is called when the extension is activated.
 export async function activate(context: vscode.ExtensionContext) {
-    console.log('Hydra Helper extension is now becoming active!');
+    // Initialize output channel
+    outputChannel = vscode.window.createOutputChannel('HydraLance');
+    context.subscriptions.push(outputChannel);
+    
+    ExtensionLogger.log('Hydra Helper extension is now becoming active!');
 
     // Check if Pylance is available
     const pylance = vscode.extensions.getExtension('ms-python.vscode-pylance');
     if (!pylance) {
+        ExtensionLogger.error('Pylance extension not found');
         vscode.window.showWarningMessage(
             'HydraLance requires the Pylance extension to function. Please install it from the marketplace.',
             'Install Pylance'
@@ -508,12 +638,30 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     // Poll until Pyright is ready to resolve symbols
-    console.log('Hydra Helper: Waiting for Pyright to be ready...');
+    ExtensionLogger.log('Waiting for Pyright to be ready...');
     while (!(await testPyrightReady())) {
-        console.log('Hydra Helper: Pyright not ready yet, retrying in 2 seconds...');
+        ExtensionLogger.log('Pyright not ready yet, retrying in 2 seconds...');
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    console.log('Hydra Helper: Pyright is ready.');
+    ExtensionLogger.log('Pyright is ready.');
+
+    // Register diagnostic command for debugging user issues
+    const diagnosticCommand = vscode.commands.registerCommand('hydralance.diagnostics', async () => {
+        const info = await collectDiagnosticInfo();
+        const document = await vscode.workspace.openTextDocument({
+            content: info,
+            language: 'json'
+        });
+        await vscode.window.showTextDocument(document);
+        vscode.window.showInformationMessage('Diagnostic info generated. Please share this with the developer.');
+    });
+    context.subscriptions.push(diagnosticCommand);
+
+    // Register command to show logs
+    const showLogsCommand = vscode.commands.registerCommand('hydralance.showLogs', () => {
+        ExtensionLogger.show();
+    });
+    context.subscriptions.push(showLogsCommand);
 
     // Register our definition provider for YAML files.
     const provider = vscode.languages.registerDefinitionProvider(
@@ -540,11 +688,11 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(hoverProvider);
 
-    console.log('Hydra Helper extension is now active!');
+    ExtensionLogger.log('Hydra Helper extension is now active!');
 
     // Ensure the shadow directory is in .gitignore if needed
     PythonHelperDocument.ensureGitignoreEntry().catch((err: Error) => {
-        console.error('Hydra Helper: Error ensuring gitignore entry:', err);
+        ExtensionLogger.error('Error ensuring gitignore entry:', err);
     });
 
     // Register linting diagnostics for _target_
@@ -575,7 +723,7 @@ function findTargetPathForDefaults(
         return undefined;
     }
 
-    console.log(`Hydra Helper: Potential relative paths: ${relativePaths.join(', ')}`);
+    ExtensionLogger.log(`Hydra Helper: Potential relative paths: ${relativePaths.join(', ')}`);
 
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
     if (!workspaceFolder) {
@@ -636,7 +784,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
             if (parsedEntry) {
                 const pos = position.character;
                 if (pos >= parsedEntry.valueRange.start && pos <= parsedEntry.valueRange.end) {
-                    console.log("Hydra Helper: Parsed defaults list entry:", parsedEntry);
+                    ExtensionLogger.log("Hydra Helper: Parsed defaults list entry:", parsedEntry);
                     return this.provideDefinitionForDefaults(document, parsedEntry);
                 }
             }
@@ -691,13 +839,13 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
     ): Promise<vscode.Definition | undefined> {
         const targetInfo = findTargetPathForDefaults(document, parsedEntry);
         if (targetInfo && targetInfo.exists && targetInfo.fullPath) {
-            console.log(`Hydra Helper: Found definition at: ${targetInfo.fullPath}`);
+            ExtensionLogger.log(`Hydra Helper: Found definition at: ${targetInfo.fullPath}`);
             const targetUri = vscode.Uri.file(targetInfo.fullPath);
             const targetPosition = new vscode.Position(0, 0);
             return new vscode.Location(targetUri, targetPosition);
         }
 
-        console.log(`Hydra Helper: Could not find a definition for the defaults entry.`);
+        ExtensionLogger.log(`Hydra Helper: Could not find a definition for the defaults entry.`);
         return undefined;
     }
 }
@@ -753,7 +901,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
         token: vscode.CancellationToken,
         context: vscode.CompletionContext
     ): Promise<vscode.CompletionItem[] | undefined> {
-        console.log(`Hydra Helper: Completion provider triggered. Reason: ${context.triggerKind}`);
+        ExtensionLogger.log(`Hydra Helper: Completion provider triggered. Reason: ${context.triggerKind}`);
         const lineText = document.lineAt(position.line).text;
         
         // Check for _target_ completion (existing functionality)
@@ -768,7 +916,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
         if (yamlContext.isParameterContext && yamlContext.targetValue) {
             // Check if we're at a position where we should suggest parameter names
             if (isAtKeyPosition(lineText, position.character)) {
-                console.log(`Hydra Helper: Providing parameter completions for target: ${yamlContext.targetValue}`);
+                ExtensionLogger.log(`Hydra Helper: Providing parameter completions for target: ${yamlContext.targetValue}`);
                 return await getParameterCompletions(yamlContext.targetValue, yamlContext.existingSiblings);
             }
         }
@@ -785,7 +933,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
         if (!pythonCode) {
             return [];
         }
-        console.log(`Hydra Helper: Created virtual Python code for completion: "${pythonCode}"`);
+        ExtensionLogger.log(`Hydra Helper: Created virtual Python code for completion: "${pythonCode}"`);
         
         const helper = new PythonHelperDocument();
         try {
@@ -795,7 +943,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             const posIdx = pythonCode.lastIndexOf(symbol);
             const positionInVirtualDoc = new vscode.Position(0, posIdx >= 0 ? posIdx : 0);
             
-            console.log('Hydra Helper: Asking Pylance for import completions...');
+            ExtensionLogger.log('Hydra Helper: Asking Pylance for import completions...');
             const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
                 'vscode.executeCompletionItemProvider',
                 fileUri,
@@ -815,7 +963,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                 vscode.CompletionItemKind.Function,
                 vscode.CompletionItemKind.Method
             ];
-            console.log(`Hydra Helper: Found ${completions.items.length} completion items from Pylance.`);
+            ExtensionLogger.log(`Hydra Helper: Found ${completions.items.length} completion items from Pylance.`);
             // print all completion kinds for debugging
             // const kindCounts: { [key: number]: number } = {};
             // completions.items.forEach(item => {
@@ -823,8 +971,8 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             //         kindCounts[item.kind] = (kindCounts[item.kind] || 0) + 1;
             //     }
             // });
-            // console.log('Hydra Helper: Completion item kinds distribution:', kindCounts);
-            console.log(`Hydra Helper: Filtering completion items...`);
+            // ExtensionLogger.log('Hydra Helper: Completion item kinds distribution:', kindCounts);
+            ExtensionLogger.log(`Hydra Helper: Filtering completion items...`);
             return completions.items
                 // .filter(item => item.kind && relevantKinds.includes(item.kind))
                 .map(item => {
