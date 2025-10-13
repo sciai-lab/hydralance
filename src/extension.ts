@@ -908,7 +908,13 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
         const targetMatch = lineText.match(/_target_:\s*(['"]?)([\w\.]*)/);
         if (targetMatch) {
             const query = targetMatch[2] || '';
-            return this.getImportCompletions(query);
+            const quoteChar = targetMatch[1] || '';
+            const targetStartIndex = targetMatch.index! + targetMatch[0].indexOf(query);
+            const targetRange = new vscode.Range(
+                new vscode.Position(position.line, targetStartIndex),
+                new vscode.Position(position.line, targetStartIndex + query.length)
+            );
+            return this.getImportCompletions(query, targetRange, quoteChar);
         }
         
         // Check for parameter completion (new functionality)
@@ -928,7 +934,7 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
      * Provides completions by simulating a Python import statement.
      * This now handles both top-level packages and sub-modules.
      */
-    private async getImportCompletions(query: string): Promise<vscode.CompletionItem[]> {
+    private async getImportCompletions(query: string, targetRange: vscode.Range, quoteChar: string = ''): Promise<vscode.CompletionItem[]> {
         const { code: pythonCode, symbol, type } = createPythonImportCode(query);
         if (!pythonCode) {
             return [];
@@ -979,7 +985,10 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
                     const shortLabel = typeof item.label === 'string' ? item.label : item.label.label;
                     const fullPath = modulePath ? `${modulePath}.${shortLabel}` : shortLabel;
                     const newItem = new vscode.CompletionItem(item.label, item.kind);
-                    newItem.insertText = fullPath;
+                    
+                    // Use textEdit to replace the existing text instead of just inserting
+                    newItem.textEdit = new vscode.TextEdit(targetRange, `${quoteChar}${fullPath}${quoteChar}`);
+                    
                     newItem.detail = item.detail;
                     newItem.documentation = item.documentation;
                     newItem.sortText = item.sortText;
