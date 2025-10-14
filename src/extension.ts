@@ -140,17 +140,16 @@ class PythonHelperDocument {
         if (!this.workspaceFolder) {
             // Fallback: create a URI in a temporary location
             // Even without a workspace, we can use an untitled scheme or a temp path
-            this.shadowUri = vscode.Uri.parse(`untitled:/.vscode/.pylance_shadow/hydra_stub_${PythonHelperDocument.helperCounter++}.py`);
+            this.shadowUri = vscode.Uri.parse(`untitled:/hydralance/hydra_stub_${PythonHelperDocument.helperCounter++}.py`);
             ExtensionLogger.debug('Created shadow URI with untitled scheme (no workspace)');
         } else {
             // Create shadow URI inside the appropriate workspace's .vscode folder
             this.shadowUri = vscode.Uri.joinPath(
                 this.workspaceFolder.uri,
-                '.vscode',
-                '.pylance_shadow',
+                'hydralance',
                 `hydra_stub_${PythonHelperDocument.helperCounter++}.py`
             );
-            ExtensionLogger.debug(`Created shadow URI in workspace folder: ${this.workspaceFolder.name}`);
+            ExtensionLogger.debug(`Created shadow URI in workspace folder ${this.workspaceFolder.name} at ${this.shadowUri.fsPath}`);
         }
     }
 
@@ -225,7 +224,7 @@ class PythonHelperDocument {
     }
 
     /**
-     * Static method to ensure .vscode/.pylance_shadow is in .gitignore
+     * Static method to ensure hydralance folder is in .gitignore
      * Now works with a specific workspace folder
      */
     static async ensureGitignoreEntry(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
@@ -243,7 +242,7 @@ class PythonHelperDocument {
         }
 
         const gitignorePath = path.join(workspacePath, '.gitignore');
-        const shadowPath = '.vscode/.pylance_shadow/';
+        const shadowPath = 'hydralance/';
         
         let alreadyIgnored = false;
         if (fs.existsSync(gitignorePath)) {
@@ -253,7 +252,7 @@ class PythonHelperDocument {
 
         if (!alreadyIgnored) {
             const answer = await vscode.window.showInformationMessage(
-                `The .vscode/.pylance_shadow folder is used for Hydra language support in workspace "${workspaceFolder.name}". Would you like to add it to your .gitignore?`,
+                `The hydralance folder is used for Hydra language support in workspace "${workspaceFolder.name}". Would you like to add it to your .gitignore?`,
                 'Yes', 'No'
             );
             if (answer === 'Yes') {
@@ -264,6 +263,37 @@ class PythonHelperDocument {
                 fs.writeFileSync(gitignorePath, newContent, 'utf8');
             }
         }
+    }
+}
+
+// Function to hide hydralance folder if setting is active
+async function ensureHydralanceFolderHidden(): Promise<void> {
+    const config = vscode.workspace.getConfiguration('hydralance');
+    const shouldHide = config.get('hideHelperFolder', true);
+    
+    if (!shouldHide) {
+        return;
+    }
+
+    const filesConfig = vscode.workspace.getConfiguration('files');
+    const currentExcludes = filesConfig.get('exclude') as { [key: string]: boolean } || {};
+    
+    // Check if the exclude pattern is already present
+    if (currentExcludes['hydralance']) {
+        return; // Already excluded, no need to add again
+    }
+    
+    // Add the hydralance folder to excludes without overwriting existing ones
+    const newExcludes = {
+        ...currentExcludes,
+        'hydralance': true
+    };
+    
+    try {
+        await filesConfig.update('exclude', newExcludes, vscode.ConfigurationTarget.Workspace);
+        ExtensionLogger.log('Added hydralance folder to files.exclude');
+    } catch (error) {
+        ExtensionLogger.error('Failed to update files.exclude setting:', error);
     }
 }
 
@@ -758,6 +788,9 @@ export async function activate(context: vscode.ExtensionContext) {
             });
         }
     }
+
+    // Hide the hydralance folder if the setting is active
+    await ensureHydralanceFolderHidden();
 
     // Register linting diagnostics for _target_
     activateHydraLinting(context);

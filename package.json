@@ -33,7 +33,7 @@
         "hydralance.hideHelperFolder": {
           "type": "boolean",
           "default": true,
-          "description": "Hide the .vscode/.pylance_shadow folder from the VS Code explorer"
+          "description": "Hide the hydralance folder from the VS Code explorer"
         }
       }
     }

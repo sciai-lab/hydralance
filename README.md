@@ -66,14 +66,14 @@ HydraLance uses a clever approach with in-memory "shadow" Python documents:
 The extension will automatically:
 - Check for Pylance availability
 - Wait for Pylance to be ready
-- Create a `.vscode/.pylance_shadow/` folder for temporary files
+- Create a `hydralance/` folder for temporary files
 - Offer to add this folder to your `.gitignore`
 
 ## Extension Settings
 
 This extension contributes the following settings:
 
-* `hydralance.hideHelperFolder`: Hide the `.vscode/.pylance_shadow` folder from the VS Code explorer (default: true)
+* `hydralance.hideHelperFolder`: Hide the `hydralance` folder from the VS Code explorer (default: true)
 
 ## Known Issues
 
@@ -96,6 +96,6 @@ Initial release featuring:
 
 ## Development
 
-This extension is built with TypeScript and uses the VS Code Extension API. It creates temporary Python files in `.vscode/.pylance_shadow/` to facilitate communication with Pylance.
+This extension is built with TypeScript and uses the VS Code Extension API. It creates temporary Python files in `hydralance/` to facilitate communication with Pylance.
 
 **Enjoy intelligent Hydra configuration editing!**
