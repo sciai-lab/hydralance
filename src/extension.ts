@@ -147,6 +147,7 @@ class PythonHelperDocument {
             this.shadowUri = vscode.Uri.joinPath(
                 this.workspaceFolder.uri,
                 'hydralance',
+                'python_helpers',  // The subfolder makes it so that the highlighted folder on left sidebar does not jump on every change (not sure why)
                 `hydra_stub_${PythonHelperDocument.helperCounter++}.py`
             );
             ExtensionLogger.debug(`Created shadow URI in workspace folder ${this.workspaceFolder.name} at ${this.shadowUri.fsPath}`);
