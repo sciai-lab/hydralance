@@ -704,6 +704,371 @@ async function getParameterCompletions(target: string, existingSiblings: string[
 }
 
 
+// Interpolation resolution system
+class YamlKeyDefinition {
+    constructor(
+        public logicalPath: string[],
+        public fileUri: vscode.Uri,
+        public position: vscode.Position,
+        public range: vscode.Range
+    ) {}
+}
+
+class YamlWorkspaceIndexer {
+    private watcher: vscode.FileSystemWatcher | undefined;
+    private index: ReversePathIndex = new ReversePathIndex();
+    private parser: YamlStructureParser = new YamlStructureParser();
+    
+    constructor(private context: vscode.ExtensionContext) {}
+    
+    async initialize(): Promise<void> {
+        ExtensionLogger.log('Initializing YAML workspace indexer...');
+        
+        // Watch for YAML file changes
+        this.watcher = vscode.workspace.createFileSystemWatcher(
+            '**/*.{yaml,yml}', // pattern
+            false, // ignoreCreateEvents
+            false, // ignoreChangeEvents  
+            false  // ignoreDeleteEvents
+        );
+        
+        this.context.subscriptions.push(this.watcher);
+        
+        // Set up event handlers
+        this.watcher.onDidCreate(this.onFileCreated.bind(this));
+        this.watcher.onDidChange(this.onFileChanged.bind(this));
+        this.watcher.onDidDelete(this.onFileDeleted.bind(this));
+        
+        // Initial scan of existing files
+        await this.scanWorkspace();
+        ExtensionLogger.log('YAML workspace indexer initialized');
+    }
+    
+    private async scanWorkspace(): Promise<void> {
+        // Get exclude patterns from configuration
+        const config = vscode.workspace.getConfiguration('hydralance');
+        const excludePatterns = config.get<string[]>('excludePatterns', ['.venv/**']);
+        
+        ExtensionLogger.log(`Scanning workspace with exclude patterns: [${excludePatterns.join(', ')}]`);
+        
+        // Create exclude pattern for findFiles
+        const excludePattern = excludePatterns.length > 0 ? `{${excludePatterns.join(',')}}` : undefined;
+        
+        const yamlFiles = await vscode.workspace.findFiles('**/*.{yaml,yml}', excludePattern);
+        ExtensionLogger.log(`Found ${yamlFiles.length} YAML files to index (after exclusions)`);
+        await Promise.all(yamlFiles.map(uri => this.indexFile(uri)));
+    }
+    
+    private shouldExcludeFile(uri: vscode.Uri): boolean {
+        const config = vscode.workspace.getConfiguration('hydralance');
+        const excludePatterns = config.get<string[]>('excludePatterns', ['.venv/**']);
+        
+        const relativePath = vscode.workspace.asRelativePath(uri);
+        
+        for (const pattern of excludePatterns) {
+            // Simple glob matching - check if the path matches the pattern
+            const regexPattern = pattern
+                .replace(/\*\*/g, '.*')  // ** matches any directory depth
+                .replace(/\*/g, '[^/]*') // * matches anything except /
+                .replace(/\?/g, '.');    // ? matches any single character
+            
+            const regex = new RegExp(`^${regexPattern}$`);
+            if (regex.test(relativePath)) {
+                ExtensionLogger.debug(`Excluding file ${relativePath} (matches pattern: ${pattern})`);
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    private async onFileCreated(uri: vscode.Uri): Promise<void> {
+        if (this.shouldExcludeFile(uri)) {
+            return;
+        }
+        ExtensionLogger.log(`YAML file created: ${uri.fsPath}`);
+        await this.indexFile(uri);
+    }
+    
+    private async onFileChanged(uri: vscode.Uri): Promise<void> {
+        if (this.shouldExcludeFile(uri)) {
+            return;
+        }
+        ExtensionLogger.log(`YAML file changed: ${uri.fsPath}`);
+        // Remove old entries and re-index
+        this.index.removeFile(uri);
+        await this.indexFile(uri);
+    }
+    
+    private onFileDeleted(uri: vscode.Uri): void {
+        if (this.shouldExcludeFile(uri)) {
+            return;
+        }
+        ExtensionLogger.log(`YAML file deleted: ${uri.fsPath}`);
+        this.index.removeFile(uri);
+    }
+    
+    private async indexFile(uri: vscode.Uri): Promise<void> {
+        try {
+            const document = await vscode.workspace.openTextDocument(uri);
+            const definitions = this.parser.parseFile(document);
+            
+            for (const definition of definitions) {
+                this.index.addDefinition(definition);
+            }
+            
+            const relativePath = vscode.workspace.asRelativePath(uri);
+            ExtensionLogger.debug(`Indexed ${definitions.length} keys from ${relativePath}`);
+            ExtensionLogger.debug(`File path stored as: ${definitions[0]?.fileUri.toString() || 'no definitions'}`);
+        } catch (error) {
+            ExtensionLogger.error(`Error indexing file ${uri.fsPath}:`, error);
+        }
+    }
+    
+    findInterpolationMatches(interpolationPath: string[]): Array<{definition: YamlKeyDefinition, matchLevel: number}> {
+        return this.index.findMatches(interpolationPath);
+    }
+    
+    async refreshIndex(): Promise<void> {
+        ExtensionLogger.log('Clearing existing index...');
+        this.index = new ReversePathIndex();
+        await this.scanWorkspace();
+        ExtensionLogger.log('Index refresh complete');
+    }
+}
+
+class ReversePathIndex {
+    private reverseIndex: Map<string, YamlKeyDefinition[]> = new Map();
+    private fileIndex: Map<string, YamlKeyDefinition[]> = new Map();
+    
+    addDefinition(definition: YamlKeyDefinition): void {
+        // Track by file for easy removal
+        const fileKey = definition.fileUri.toString();
+        if (!this.fileIndex.has(fileKey)) {
+            this.fileIndex.set(fileKey, []);
+        }
+        this.fileIndex.get(fileKey)!.push(definition);
+        
+        // Index by each suffix of the logical path for reverse lookup
+        const path = definition.logicalPath;
+        
+        for (let i = 0; i < path.length; i++) {
+            const suffix = path.slice(i).join('.');
+            
+            if (!this.reverseIndex.has(suffix)) {
+                this.reverseIndex.set(suffix, []);
+            }
+            this.reverseIndex.get(suffix)!.push(definition);
+        }
+    }
+    
+    removeFile(uri: vscode.Uri): void {
+        const fileKey = uri.toString();
+        const definitions = this.fileIndex.get(fileKey) || [];
+        
+        // Remove from reverse index
+        for (const definition of definitions) {
+            const path = definition.logicalPath;
+            for (let i = 0; i < path.length; i++) {
+                const suffix = path.slice(i).join('.');
+                const entries = this.reverseIndex.get(suffix) || [];
+                const filteredEntries = entries.filter(d => d !== definition);
+                
+                if (filteredEntries.length === 0) {
+                    this.reverseIndex.delete(suffix);
+                } else {
+                    this.reverseIndex.set(suffix, filteredEntries);
+                }
+            }
+        }
+        
+        // Remove from file index
+        this.fileIndex.delete(fileKey);
+    }
+    
+    findMatches(interpolationPath: string[]): Array<{definition: YamlKeyDefinition, matchLevel: number}> {
+        const results: Array<{definition: YamlKeyDefinition, matchLevel: number}> = [];
+        
+        ExtensionLogger.debug(`Finding matches for interpolation path: [${interpolationPath.join(', ')}]`);
+        
+        // Try matching from most specific to least specific
+        for (let level = interpolationPath.length; level >= 1; level--) {
+            const searchPath = interpolationPath.slice(-level).join('.');
+            const matches = this.reverseIndex.get(searchPath) || [];
+            
+            ExtensionLogger.debug(`Level ${level}: searching for "${searchPath}" - found ${matches.length} matches`);
+            
+            for (const match of matches) {
+                results.push({ definition: match, matchLevel: level });
+                ExtensionLogger.debug(`  Added: ${match.logicalPath.join('.')} from ${vscode.workspace.asRelativePath(match.fileUri)}`);
+            }
+        }
+
+        // print matches with their match levels
+        ExtensionLogger.debug(`Total matches found: ${results.length}`);
+        results.forEach((result, index) => {
+            ExtensionLogger.debug(`  ${index}: Level ${result.matchLevel} - ${result.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(result.definition.fileUri)}`);
+        });
+        
+        // Deduplicate: Keep only the highest level match for each unique file
+        const deduplicatedResults = new Map<string, {definition: YamlKeyDefinition, matchLevel: number}>();
+        
+        for (const result of results) {
+            // Create a unique key for each file
+            const key = result.definition.fileUri.toString();
+            
+            // Only keep this result if it's the first one for this file, or has a higher match level
+            const existing = deduplicatedResults.get(key);
+            if (!existing || existing.matchLevel < result.matchLevel) {
+                if (existing) {
+                    ExtensionLogger.debug(`Replacing level ${existing.matchLevel} with level ${result.matchLevel} for file: ${vscode.workspace.asRelativePath(result.definition.fileUri)}`);
+                } else {
+                    ExtensionLogger.debug(`Adding level ${result.matchLevel} for file: ${vscode.workspace.asRelativePath(result.definition.fileUri)}`);
+                }
+                deduplicatedResults.set(key, result);
+            } else {
+                ExtensionLogger.debug(`Skipping level ${result.matchLevel} (existing level ${existing.matchLevel}) for file: ${vscode.workspace.asRelativePath(result.definition.fileUri)}`);
+            }
+        }
+        
+        // Convert back to array
+        const uniqueResults = Array.from(deduplicatedResults.values());
+        
+        // Sort by match level (descending) then by file path for stability
+        const sortedResults = uniqueResults.sort((a, b) => {
+            if (a.matchLevel !== b.matchLevel) {
+                return b.matchLevel - a.matchLevel;
+            }
+            return a.definition.fileUri.toString().localeCompare(b.definition.fileUri.toString());
+        });
+        
+        // Debug: Log the final results
+        ExtensionLogger.debug(`After deduplication: ${uniqueResults.length} unique matches:`);
+        sortedResults.forEach((result, index) => {
+            ExtensionLogger.debug(`  ${index}: Level ${result.matchLevel} - ${result.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(result.definition.fileUri)}`);
+        });
+        
+        // Apply match filtering based on configuration
+        const filteredResults = this.applyMatchFilter(sortedResults, interpolationPath.length);
+        
+        return filteredResults;
+    }
+    
+    private applyMatchFilter(results: Array<{definition: YamlKeyDefinition, matchLevel: number}>, maxPossibleLevel: number): Array<{definition: YamlKeyDefinition, matchLevel: number}> {
+        const config = vscode.workspace.getConfiguration('hydralance');
+        const matchFilter = config.get<string>('matchFilter', 'top matches only');
+        
+        if (matchFilter === 'all') {
+            ExtensionLogger.debug(`Filter: Showing all ${results.length} matches`);
+            return results;
+        }
+        
+        if (results.length === 0) {
+            return results;
+        }
+        
+        if (matchFilter === 'perfect matches only') {
+            // Only show matches that exactly match the interpolation depth
+            const perfectMatches = results.filter(result => result.matchLevel === maxPossibleLevel);
+            ExtensionLogger.debug(`Filter: Showing ${perfectMatches.length} perfect matches (level ${maxPossibleLevel}) out of ${results.length} total`);
+            return perfectMatches;
+        }
+        
+        if (matchFilter === 'top matches only') {
+            // Only show matches of the highest level found
+            const highestLevel = results[0].matchLevel; // Results are sorted by level descending
+            const topMatches = results.filter(result => result.matchLevel === highestLevel);
+            ExtensionLogger.debug(`Filter: Showing ${topMatches.length} top matches (level ${highestLevel}) out of ${results.length} total`);
+            return topMatches;
+        }
+        
+        // Fallback to all matches
+        ExtensionLogger.debug(`Filter: Unknown filter '${matchFilter}', showing all matches`);
+        return results;
+    }
+}
+
+class YamlStructureParser {
+    parseFile(document: vscode.TextDocument): YamlKeyDefinition[] {
+        const lines = document.getText().split('\n');
+        const definitions: YamlKeyDefinition[] = [];
+        const pathStack: Array<{key: string, indent: number}> = [];
+        
+        // Add file path components to logical path
+        const filePathComponents = this.getFilePathComponents(document.uri);
+        
+        for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+            const line = lines[lineNum];
+            const trimmed = line.trim();
+            
+            // Skip empty lines and comments
+            if (!trimmed || trimmed.startsWith('#')) {
+                continue;
+            }
+            
+            const indent = this.getIndentLevel(line);
+            const keyMatch = line.match(/^(\s*)([^:]+):\s*(.*)/);
+            
+            if (keyMatch) {
+                const key = keyMatch[2].trim();
+                
+                // Pop stack for items at deeper or equal indentation
+                while (pathStack.length > 0 && pathStack[pathStack.length - 1].indent >= indent) {
+                    pathStack.pop();
+                }
+                
+                // Build logical path: file path + yaml path
+                const logicalPath = [
+                    ...filePathComponents,
+                    ...pathStack.map(item => item.key),
+                    key
+                ];
+                
+                definitions.push(new YamlKeyDefinition(
+                    logicalPath,
+                    document.uri,
+                    new vscode.Position(lineNum, keyMatch[1].length),
+                    new vscode.Range(
+                        lineNum, keyMatch[1].length,
+                        lineNum, keyMatch[1].length + key.length
+                    )
+                ));
+                
+                // Add to stack if this could have children
+                const value = keyMatch[3].trim();
+                if (!value || value === '{' || value === '[') {
+                    pathStack.push({ key, indent });
+                }
+            }
+        }
+        
+        return definitions;
+    }
+    
+    private getFilePathComponents(uri: vscode.Uri): string[] {
+        const relativePath = vscode.workspace.asRelativePath(uri);
+        const pathWithoutExtension = relativePath.replace(/\.(yaml|yml)$/, '');
+        
+        // Split path and remove the filename (last component)
+        const pathParts = pathWithoutExtension.split('/').filter(Boolean);
+        
+        // Remove the last component (filename) and keep only directory structure
+        const directoryParts = pathParts.slice(0, -1);
+        
+        ExtensionLogger.debug(`File ${relativePath} -> directory path: [${directoryParts.join(', ')}]`);
+        
+        return directoryParts;
+    }
+    
+    private getIndentLevel(line: string): number {
+        const match = line.match(/^(\s*)/);
+        return match ? match[1].length : 0;
+    }
+}
+
+// Global indexer instance
+let yamlIndexer: YamlWorkspaceIndexer;
+
 // This function is called when the extension is activated.
 export async function activate(context: vscode.ExtensionContext) {
     // Initialize output channel
@@ -735,6 +1100,10 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     ExtensionLogger.log('Pyright is ready.');
 
+    // Initialize YAML workspace indexer
+    yamlIndexer = new YamlWorkspaceIndexer(context);
+    await yamlIndexer.initialize();
+
     // Register diagnostic command for debugging user issues
     const diagnosticCommand = vscode.commands.registerCommand('hydralance.diagnostics', async () => {
         const info = await collectDiagnosticInfo();
@@ -752,6 +1121,55 @@ export async function activate(context: vscode.ExtensionContext) {
         ExtensionLogger.show();
     });
     context.subscriptions.push(showLogsCommand);
+
+    // Register debug command to test interpolation indexing
+    const debugIndexCommand = vscode.commands.registerCommand('hydralance.debugIndex', async () => {
+        if (!yamlIndexer) {
+            vscode.window.showErrorMessage('YAML indexer not initialized');
+            return;
+        }
+        
+        const config = vscode.workspace.getConfiguration('hydralance');
+        const matchFilter = config.get<string>('matchFilter', 'top matches only');
+        
+        ExtensionLogger.log(`Current match filter setting: ${matchFilter}`);
+        
+        // Test multiple interpolation patterns
+        const testCases = [
+            ['name'],           // Should match many
+            ['dataset', 'name'], // Should match fewer, higher level
+            ['model', 'name'],   // Should match fewer, higher level  
+            ['config', 'dataset', 'imagenet', 'name'] // Very specific
+        ];
+        
+        for (const testPath of testCases) {
+            const matches = yamlIndexer.findInterpolationMatches(testPath);
+            
+            const info = [
+                `Testing interpolation: ${testPath.join('.')} (max level: ${testPath.length})`,
+                `Found ${matches.length} matches (after filtering):`,
+                ...matches.map(m => `  Level ${m.matchLevel}: ${m.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(m.definition.fileUri)}`)
+            ].join('\n');
+            
+            ExtensionLogger.log('Debug index results:\n' + info);
+        }
+        
+        vscode.window.showInformationMessage(`Debug complete. Check logs for details.`);
+    });
+    context.subscriptions.push(debugIndexCommand);
+
+    // Register command to refresh the YAML index
+    const refreshIndexCommand = vscode.commands.registerCommand('hydralance.refreshIndex', async () => {
+        if (!yamlIndexer) {
+            vscode.window.showErrorMessage('YAML indexer not initialized');
+            return;
+        }
+        
+        ExtensionLogger.log('Refreshing YAML index...');
+        await yamlIndexer.refreshIndex();
+        vscode.window.showInformationMessage('YAML index refreshed successfully.');
+    });
+    context.subscriptions.push(refreshIndexCommand);
 
     // Register our definition provider for YAML files.
     const provider = vscode.languages.registerDefinitionProvider(
@@ -777,6 +1195,13 @@ export async function activate(context: vscode.ExtensionContext) {
         new HydraHoverProvider()
     );
     context.subscriptions.push(hoverProvider);
+
+    // Register interpolation definition provider for YAML files
+    const interpolationDefinitionProvider = vscode.languages.registerDefinitionProvider(
+        { language: 'yaml' },
+        new HydraInterpolationDefinitionProvider()
+    );
+    context.subscriptions.push(interpolationDefinitionProvider);
 
     ExtensionLogger.log('Hydra Helper extension is now active!');
 
@@ -989,6 +1414,85 @@ class HydraHoverProvider implements vscode.HoverProvider {
         }
 
         return undefined;
+    }
+}
+
+class HydraInterpolationDefinitionProvider implements vscode.DefinitionProvider {
+    public async provideDefinition(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        token: vscode.CancellationToken
+    ): Promise<vscode.Definition | undefined> {
+        const lineText = document.lineAt(position.line).text;
+        
+        // Check for interpolation expression: ${key.subkey}
+        // Exclude OmegaConf resolvers which contain colons: ${resolver:arg}
+        const interpolationRegex = /\$\{([^:}]+)\}/g;
+        let match;
+        
+        while ((match = interpolationRegex.exec(lineText)) !== null) {
+            const startPos = match.index;
+            const endPos = match.index + match[0].length;
+            
+            // Check if cursor is within this interpolation
+            if (position.character >= startPos && position.character <= endPos) {
+                const interpolationPath = match[1].trim();
+                ExtensionLogger.log(`Found interpolation at cursor: ${interpolationPath}`);
+                
+                return this.resolveInterpolation(interpolationPath);
+            }
+        }
+        
+        return undefined;
+    }
+    
+    private async resolveInterpolation(interpolationPath: string): Promise<vscode.Definition | undefined> {
+        if (!yamlIndexer) {
+            ExtensionLogger.error('YAML indexer not initialized');
+            return undefined;
+        }
+        
+        // Parse the interpolation path (e.g., "dataset.name" -> ["dataset", "name"])
+        const pathComponents = interpolationPath.split('.').map(s => s.trim()).filter(Boolean);
+        
+        if (pathComponents.length === 0) {
+            return undefined;
+        }
+        
+        ExtensionLogger.log(`Resolving interpolation path: [${pathComponents.join(', ')}]`);
+        
+        // Find matches using our reverse indexing
+        const matches = yamlIndexer.findInterpolationMatches(pathComponents);
+        
+        if (matches.length === 0) {
+            ExtensionLogger.log('No matches found for interpolation');
+            return undefined;
+        }
+        
+        ExtensionLogger.log(`Found ${matches.length} matches for interpolation`);
+        
+        // Convert matches to VS Code locations
+        const locations: vscode.Location[] = [];
+        
+        for (const match of matches) {
+            try {
+                // Use the stored URI directly - no complex path construction needed!
+                const uri = match.definition.fileUri;
+                locations.push(new vscode.Location(uri, match.definition.range));
+                
+                ExtensionLogger.debug(`Match level ${match.matchLevel}: ${match.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(uri)}`);
+                ExtensionLogger.debug(`URI: ${uri.toString()}`);
+            } catch (error) {
+                ExtensionLogger.error(`Error creating location for ${match.definition.fileUri.toString()}:`, error);
+            }
+        }
+        
+        ExtensionLogger.log(`Returning ${locations.length} locations to VS Code`);
+        locations.forEach((loc, index) => {
+            ExtensionLogger.log(`  ${index}: ${vscode.workspace.asRelativePath(loc.uri)} at ${loc.range.start.line}:${loc.range.start.character}`);
+        });
+        
+        return locations;
     }
 }
 

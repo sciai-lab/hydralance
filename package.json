@@ -25,6 +25,14 @@
       {
         "command": "hydralance.showLogs",
         "title": "HydraLance: Show Logs"
+      },
+      {
+        "command": "hydralance.debugIndex",
+        "title": "HydraLance: Debug Interpolation Index"
+      },
+      {
+        "command": "hydralance.refreshIndex",
+        "title": "HydraLance: Refresh YAML Index"
       }
     ],
     "configuration": {
@@ -34,6 +42,20 @@
           "type": "boolean",
           "default": true,
           "description": "Hide the hydralance folder from the VS Code explorer"
+        },
+        "hydralance.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [".venv/**"],
+          "description": "Glob patterns to exclude from YAML file indexing for interpolation resolution"
+        },
+        "hydralance.matchFilter": {
+          "type": "string",
+          "enum": ["all", "top matches only", "perfect matches only"],
+          "default": "top matches only",
+          "description": "Controls which interpolation matches are shown: 'all' shows everything, 'top matches only' shows only the highest level matches found, 'perfect matches only' shows only matches that exactly match the interpolation depth"
         }
       }
     }
