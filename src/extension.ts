@@ -1131,8 +1131,11 @@ export async function activate(context: vscode.ExtensionContext) {
         
         const config = vscode.workspace.getConfiguration('hydralance');
         const matchFilter = config.get<string>('matchFilter', 'top matches only');
+        const isolateWorkspaceFolders = config.get<boolean>('isolateWorkspaceFolders', true);
         
         ExtensionLogger.log(`Current match filter setting: ${matchFilter}`);
+        ExtensionLogger.log(`Workspace isolation enabled: ${isolateWorkspaceFolders}`);
+        ExtensionLogger.log(`Workspace folders: ${vscode.workspace.workspaceFolders?.map(f => f.name).join(', ') || 'none'}`);
         
         // Test multiple interpolation patterns
         const testCases = [
@@ -1148,7 +1151,11 @@ export async function activate(context: vscode.ExtensionContext) {
             const info = [
                 `Testing interpolation: ${testPath.join('.')} (max level: ${testPath.length})`,
                 `Found ${matches.length} matches (after filtering):`,
-                ...matches.map(m => `  Level ${m.matchLevel}: ${m.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(m.definition.fileUri)}`)
+                ...matches.map(m => {
+                    const workspaceFolder = vscode.workspace.getWorkspaceFolder(m.definition.fileUri);
+                    const workspaceName = workspaceFolder ? `[${workspaceFolder.name}]` : '[no workspace]';
+                    return `  Level ${m.matchLevel}: ${m.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(m.definition.fileUri)} ${workspaceName}`;
+                })
             ].join('\n');
             
             ExtensionLogger.log('Debug index results:\n' + info);
@@ -1439,14 +1446,14 @@ class HydraInterpolationDefinitionProvider implements vscode.DefinitionProvider 
                 const interpolationPath = match[1].trim();
                 ExtensionLogger.log(`Found interpolation at cursor: ${interpolationPath}`);
                 
-                return this.resolveInterpolation(interpolationPath);
+                return this.resolveInterpolation(interpolationPath, document);
             }
         }
         
         return undefined;
     }
     
-    private async resolveInterpolation(interpolationPath: string): Promise<vscode.Definition | undefined> {
+    private async resolveInterpolation(interpolationPath: string, sourceDocument: vscode.TextDocument): Promise<vscode.Definition | undefined> {
         if (!yamlIndexer) {
             ExtensionLogger.error('YAML indexer not initialized');
             return undefined;
@@ -1471,10 +1478,42 @@ class HydraInterpolationDefinitionProvider implements vscode.DefinitionProvider 
         
         ExtensionLogger.log(`Found ${matches.length} matches for interpolation`);
         
+        // Apply workspace isolation if enabled
+        const config = vscode.workspace.getConfiguration('hydralance');
+        const isolateWorkspaceFolders = config.get<boolean>('isolateWorkspaceFolders', true);
+        
+        let filteredMatches = matches;
+        
+        if (isolateWorkspaceFolders) {
+            const sourceWorkspaceFolder = vscode.workspace.getWorkspaceFolder(sourceDocument.uri);
+            
+            if (sourceWorkspaceFolder) {
+                filteredMatches = matches.filter(match => {
+                    const matchWorkspaceFolder = vscode.workspace.getWorkspaceFolder(match.definition.fileUri);
+                    const sameWorkspace = matchWorkspaceFolder?.uri.toString() === sourceWorkspaceFolder.uri.toString();
+                    
+                    if (!sameWorkspace) {
+                        ExtensionLogger.debug(`Excluding match from different workspace: ${vscode.workspace.asRelativePath(match.definition.fileUri)} (${matchWorkspaceFolder?.name || 'unknown'} vs ${sourceWorkspaceFolder.name})`);
+                    }
+                    
+                    return sameWorkspace;
+                });
+                
+                ExtensionLogger.log(`After workspace isolation: ${filteredMatches.length} matches (filtered from ${matches.length})`);
+            } else {
+                ExtensionLogger.log('Source document has no workspace folder, showing all matches');
+            }
+        }
+        
+        if (filteredMatches.length === 0) {
+            ExtensionLogger.log('No matches found after workspace filtering');
+            return undefined;
+        }
+        
         // Convert matches to VS Code locations
         const locations: vscode.Location[] = [];
         
-        for (const match of matches) {
+        for (const match of filteredMatches) {
             try {
                 // Use the stored URI directly - no complex path construction needed!
                 const uri = match.definition.fileUri;

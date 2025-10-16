@@ -56,6 +56,11 @@
           "enum": ["all", "top matches only", "perfect matches only"],
           "default": "top matches only",
           "description": "Controls which interpolation matches are shown: 'all' shows everything, 'top matches only' shows only the highest level matches found, 'perfect matches only' shows only matches that exactly match the interpolation depth"
+        },
+        "hydralance.isolateWorkspaceFolders": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, interpolation resolution only considers files within the same workspace folder, preventing cross-workspace matches"
         }
       }
     }
