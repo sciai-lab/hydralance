@@ -1,8 +1,8 @@
 {
   "name": "hydralance",
-  "displayName": "HydraLance",
-  "description": "Adds Hydra support to VS Code",
-  "version": "0.0.3",
+  "displayName": "HydraLance", 
+  "description": "Intelligent Hydra configuration support with interpolation resolution, _target_ navigation, and parameter completion",
+  "version": "0.0.4",
   "engines": {
     "vscode": "^1.104.0"
   },

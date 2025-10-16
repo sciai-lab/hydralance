@@ -1122,49 +1122,6 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(showLogsCommand);
 
-    // Register debug command to test interpolation indexing
-    const debugIndexCommand = vscode.commands.registerCommand('hydralance.debugIndex', async () => {
-        if (!yamlIndexer) {
-            vscode.window.showErrorMessage('YAML indexer not initialized');
-            return;
-        }
-        
-        const config = vscode.workspace.getConfiguration('hydralance');
-        const matchFilter = config.get<string>('matchFilter', 'top matches only');
-        const isolateWorkspaceFolders = config.get<boolean>('isolateWorkspaceFolders', true);
-        
-        ExtensionLogger.log(`Current match filter setting: ${matchFilter}`);
-        ExtensionLogger.log(`Workspace isolation enabled: ${isolateWorkspaceFolders}`);
-        ExtensionLogger.log(`Workspace folders: ${vscode.workspace.workspaceFolders?.map(f => f.name).join(', ') || 'none'}`);
-        
-        // Test multiple interpolation patterns
-        const testCases = [
-            ['name'],           // Should match many
-            ['dataset', 'name'], // Should match fewer, higher level
-            ['model', 'name'],   // Should match fewer, higher level  
-            ['config', 'dataset', 'imagenet', 'name'] // Very specific
-        ];
-        
-        for (const testPath of testCases) {
-            const matches = yamlIndexer.findInterpolationMatches(testPath);
-            
-            const info = [
-                `Testing interpolation: ${testPath.join('.')} (max level: ${testPath.length})`,
-                `Found ${matches.length} matches (after filtering):`,
-                ...matches.map(m => {
-                    const workspaceFolder = vscode.workspace.getWorkspaceFolder(m.definition.fileUri);
-                    const workspaceName = workspaceFolder ? `[${workspaceFolder.name}]` : '[no workspace]';
-                    return `  Level ${m.matchLevel}: ${m.definition.logicalPath.join('.')} in ${vscode.workspace.asRelativePath(m.definition.fileUri)} ${workspaceName}`;
-                })
-            ].join('\n');
-            
-            ExtensionLogger.log('Debug index results:\n' + info);
-        }
-        
-        vscode.window.showInformationMessage(`Debug complete. Check logs for details.`);
-    });
-    context.subscriptions.push(debugIndexCommand);
-
     // Register command to refresh the YAML index
     const refreshIndexCommand = vscode.commands.registerCommand('hydralance.refreshIndex', async () => {
         if (!yamlIndexer) {
