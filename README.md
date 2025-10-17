@@ -44,7 +44,7 @@ Navigate to referenced config files in Hydra defaults lists:
 
 ```yaml
 defaults:
-  - default              # Ctrl+Click to go to .defaults.yaml
+  - default              # Ctrl+Click to go to .default.yaml
   - dataset: imagenet    # Ctrl+Click to open ./dataset/imagenet.yaml
 ```
 
