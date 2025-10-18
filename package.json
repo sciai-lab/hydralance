@@ -7,7 +7,16 @@
     "vscode": "^1.104.0"
   },
   "categories": [
-    "Other"
+    "Machine Learning",
+    "Linters"
+  ],
+  "keywords": [
+    "hydra",
+    "yaml",
+    "configuration",
+    "completion",
+    "navigation",
+    "go to definition"
   ],
   "activationEvents": [
     "onLanguage:yaml"
