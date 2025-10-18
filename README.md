@@ -136,3 +136,7 @@ Access these commands via the Command Palette (`Ctrl+Shift+P`):
 * **`HydraLance: Show Logs`** - Show extension logs in the output panel  
 * **`HydraLance: Refresh YAML Index`** - Refresh the YAML file index
 
+## Notice
+
+HydraLance is an independent project and is not affiliated with or endorsed by the Hydra project or its maintainers. Use at your own discretion.
+
