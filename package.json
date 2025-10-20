@@ -1,7 +1,7 @@
 {
   "name": "hydralance",
   "displayName": "HydraLance", 
-  "description": "Intelligent Hydra configuration support with interpolation resolution, _target_ navigation, and parameter completion",
+  "description": "Intelligent language support for Hydra configuration files with go-to-definition for _target_ values, parameter auto-completion, cross-file interpolation resolution and defaults list navigation.",
   "version": "0.0.4",
   "engines": {
     "vscode": "^1.104.0"
@@ -18,6 +18,11 @@
     "navigation",
     "go to definition"
   ],
+  "repository": {
+    "url": "https://github.com/sciai-lab/hydralance"
+  },
+  "license": "MIT",
+  "publisher": "Roman Remme",
   "activationEvents": [
     "onLanguage:yaml"
   ],
