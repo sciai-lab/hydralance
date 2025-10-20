@@ -2,7 +2,7 @@
   "name": "hydralance",
   "displayName": "HydraLance", 
   "description": "Intelligent language support for Hydra configuration files with go-to-definition for _target_ values, parameter auto-completion, cross-file interpolation resolution and defaults list navigation.",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.104.0"
   },
