@@ -22,7 +22,12 @@
     "url": "https://github.com/sciai-lab/hydralance"
   },
   "license": "MIT",
-  "publisher": "Roman Remme",
+  "publisher": "imagirom",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#1F2436",
+    "theme": "dark"
+  },
   "activationEvents": [
     "onLanguage:yaml"
   ],
