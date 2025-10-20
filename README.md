@@ -1,8 +1,8 @@
 # HydraLance
 
-HydraLance is a VS Code extension that provides intelligent language support for [Hydra](https://hydra.cc/) configuration files. It bridges the gap between YAML configuration files and Python code by leveraging Pylance to provide code intelligence for `_target_` references, parameter completion, and indexes `.yaml` files resolve Hydra interpolations.
+HydraLance is a VS Code extension that provides intelligent language support for [Hydra](https://hydra.cc/) configuration files. It bridges the gap between YAML configuration files and Python code by leveraging Pylance to provide code intelligence for `_target_` references, parameter completion, and indexes `.yaml` files to resolve Hydra interpolations.
 
-If you find HydraLance useful, please consider giving it a ⭐ on [GitHub](https://github.com/imagirom/hydralance)!
+If you find HydraLance useful, please consider giving it a ⭐ on [GitHub](https://github.com/sciai-lab/hydralance)!
 
 ## ✨ Features
 
