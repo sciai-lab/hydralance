@@ -379,6 +379,7 @@ async function testPyrightReady(): Promise<boolean> {
 
 // --- Utility: YAML context parsing for parameter detection ---
 interface YamlContext {
+    isInComment: boolean;
     isParameterContext: boolean;
     isInDefaultsList: boolean;
     targetValue?: string;
@@ -393,6 +394,10 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     
     ExtensionLogger.debug(`Parsing YAML context at line ${position.line}, indent ${currentIndent}`);
 
+    // Check if we are in a comment. This is the case if there is a '#' before the cursor on the line
+    const commentIndex = currentLine.indexOf('#');
+    const isInComment = commentIndex !== -1 && commentIndex < position.character;
+
     // Check if we are in a 'defaults' list
     let isInDefaultsList = false;
     let parentKey = undefined;
@@ -401,7 +406,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     // Traverse upwards to find the parent key
     for (let i = position.line - 1; i >= 0; i--) {
         const line = lines[i];
-        if (line.trim() === '') {
+        if (line.trim() === '' || line.trim().startsWith('#')) {
             continue;
         }
         const lineIndent = getIndentLevel(line);
@@ -446,7 +451,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
             const keyMatch = line.match(/^\s*([^:]+):\s*(.*)/);
             if (keyMatch) {
                 const key = keyMatch[1].trim();
-                const value = keyMatch[2].trim();
+                const value = keyMatch[2].split('#')[0].trim();
                 
                 if (key === '_target_') {
                     // Remove quotes if present
@@ -463,6 +468,7 @@ function parseYamlContext(document: vscode.TextDocument, position: vscode.Positi
     ExtensionLogger.log(`Hydra Helper: Found ${existingSiblings.length} existing siblings: ${existingSiblings.join(', ')}`);
     
     return {
+        isInComment,
         isParameterContext: !!targetValue,
         isInDefaultsList,
         targetValue,
@@ -1266,7 +1272,7 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
 
         // Check for defaults list definition
         const yamlContext = parseYamlContext(document, position);
-        if (yamlContext.isInDefaultsList) {
+        if (!yamlContext.isInComment && yamlContext.isInDefaultsList) {
             const parsedEntry = parseDefaultsListEntry(lineText);
             if (parsedEntry) {
                 const pos = position.character;
@@ -1347,7 +1353,7 @@ class HydraHoverProvider implements vscode.HoverProvider {
 
         // Check for defaults list hover
         const yamlContext = parseYamlContext(document, position);
-        if (yamlContext.isInDefaultsList) {
+        if (!yamlContext.isInComment && yamlContext.isInDefaultsList) {
             const parsedEntry = parseDefaultsListEntry(lineText);
             if (parsedEntry) {
                 const pos = position.character;
@@ -1515,9 +1521,9 @@ class HydraCompletionItemProvider implements vscode.CompletionItemProvider {
             return this.getImportCompletions(query, targetRange, quoteChar, document.uri);
         }
         
-        // Check for parameter completion (new functionality)
+        // Check for parameter completion
         const yamlContext = parseYamlContext(document, position);
-        if (yamlContext.isParameterContext && yamlContext.targetValue) {
+        if (!yamlContext.isInComment && yamlContext.isParameterContext && yamlContext.targetValue) {
             // Check if we're at a position where we should suggest parameter names
             if (isAtKeyPosition(lineText, position.character)) {
                 ExtensionLogger.log(`Hydra Helper: Providing parameter completions for target: ${yamlContext.targetValue}`);
