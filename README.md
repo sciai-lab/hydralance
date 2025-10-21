@@ -4,6 +4,8 @@ HydraLance is a VS Code extension that provides intelligent language support for
 
 If you find HydraLance useful, please consider giving it a ⭐ on [GitHub](https://github.com/sciai-lab/hydralance)!
 
+![HydraLance Demo](https://github.com/sciai-lab/hydralance/raw/main/resources/demo.gif)
+
 ## Features
 
 ### 1. Go-to-Definition for `_target_` Values
