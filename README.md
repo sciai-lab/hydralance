@@ -4,9 +4,9 @@ HydraLance is a VS Code extension that provides intelligent language support for
 
 If you find HydraLance useful, please consider giving it a ⭐ on [GitHub](https://github.com/sciai-lab/hydralance)!
 
-## ✨ Features
+## Features
 
-### 1. 🎯 Go-to-Definition for `_target_` Values
+### 1. Go-to-Definition for `_target_` Values
 Navigate directly from YAML configurations to Python source code:
 
 ```yaml
@@ -18,7 +18,7 @@ model:
 
 Pro tip: Use `Ctrl+Shift+F10` to peek at the definition without leaving your current context.
 
-### 2. 🔍 Auto-completion for `_target_` Values
+### 2. Auto-completion for `_target_` Values
 Get intelligent suggestions for Python modules, classes, and functions:
 
 ```yaml
@@ -26,7 +26,7 @@ model:
   _target_: torch.nn.  # Auto-complete shows Linear, Conv2d, etc.
 ```
 
-### 3. ⚡ Parameter Auto-completion
+### 3. Parameter Auto-completion
 Get intelligent parameter suggestions based on the target class/function signature:
 
 ```yaml
@@ -39,7 +39,7 @@ optimizer:
   # Type here to get completions for: lr, betas, eps, weight_decay, amsgrad, ...
 ```
 
-### 5. 🏗️ Defaults List Navigation
+### 5. Defaults List Navigation
 Navigate to referenced config files in Hydra defaults lists:
 
 ```yaml
@@ -50,7 +50,7 @@ defaults:
 
 Resolved filenames are displayed on hover.
 
-### 4. 🔗 Interpolation Resolution
+### 4. Interpolation Resolution
 Navigate between Hydra config interpolations across your entire project:
 
 ```yaml
@@ -69,7 +69,7 @@ experiment:
 - **Workspace isolation**: Keep matches within workspace boundaries
 - **Level-based ranking**: Most specific matches shown first
 
-### 6. 🚨 Error Detection and Linting
+### 6. Error Detection and Linting
 Invalid `_target_` references are highlighted with error diagnostics:
 
 ```yaml
@@ -77,7 +77,7 @@ model:
   _target_: torch.nn.InvalidClass  # Shows error: cannot be resolved
 ```
 
-## 🔧 How It Works
+## How It Works
 
 HydraLance uses multiple approaches:
 
@@ -91,12 +91,12 @@ HydraLance uses multiple approaches:
 2. **Reverse Path Matching**: Builds a reverse lookup index for efficient interpolation resolution
 3. **Logical Path Construction**: Maps file paths and YAML keys to Hydra's logical namespace
 
-## 📋 Requirements
+## Requirements
 
 - **Pylance Extension**: HydraLance requires the [Pylance extension](https://marketplace.visualstudio.com/items?itemName=ms-python.vscode-pylance) to function
 - **Python Environment**: A configured Python environment with the packages you're referencing in your configurations
 
-## 📦 Installation
+## Installation
 
 1. Install the Pylance extension (you probably already have it)
 2. Install HydraLance from the VS Code marketplace
@@ -109,7 +109,7 @@ The extension will automatically:
 - Create a `hydralance/` folder for temporary files
 - Offer to add this folder to your `.gitignore`
 
-## ⚙️ Extension Settings
+## Settings
 
 ### Core Settings
 * **`hydralance.hideHelperFolder`** *(boolean, default: true)*  
@@ -128,7 +128,7 @@ The extension will automatically:
 * **`hydralance.isolateWorkspaceFolders`** *(boolean, default: true)*  
   When enabled, interpolation resolution only considers files within the same workspace folder
 
-## 🎮 Commands
+## Commands
 
 Access these commands via the Command Palette (`Ctrl+Shift+P`):
 
