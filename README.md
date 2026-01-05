@@ -117,6 +117,9 @@ The extension will automatically:
 * **`hydralance.hideHelperFolder`** *(boolean, default: true)*  
   Hide the `hydralance` folder from the VS Code explorer
 
+* **`hydralance.showOutputOnError`** *(boolean, default: false)*  
+  Automatically open the HydraLance output channel only when you explicitly opt in to seeing logs as soon as an internal error occurs
+
 ### Interpolation Resolution Settings  
 * **`hydralance.excludePatterns`** *(array, default: [".venv/**"])*  
   Glob patterns to exclude from YAML file indexing for interpolation resolution

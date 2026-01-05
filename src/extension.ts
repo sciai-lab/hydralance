@@ -11,6 +11,7 @@ let outputChannel: vscode.OutputChannel;
 class ExtensionLogger {
     private static logs: string[] = [];
     private static maxLogs = 1000; // Keep last 1000 log entries
+    private static autoShowOutputOnError = false;
     
     static log(message: string, data?: any) {
         const timestamp = new Date().toISOString();
@@ -44,7 +45,9 @@ class ExtensionLogger {
         console.error(logMessage, error || '');
         if (outputChannel) {
             outputChannel.appendLine(fullMessage);
-            outputChannel.show(); // Show output panel on errors
+            if (this.autoShowOutputOnError) {
+                outputChannel.show();
+            }
         }
     }
     
@@ -69,6 +72,10 @@ class ExtensionLogger {
         if (outputChannel) {
             outputChannel.show();
         }
+    }
+    
+    static setAutoShowOnError(shouldShow: boolean) {
+        this.autoShowOutputOnError = shouldShow;
     }
     
     static getAllLogs(): string[] {
@@ -1080,6 +1087,16 @@ export async function activate(context: vscode.ExtensionContext) {
     // Initialize output channel
     outputChannel = vscode.window.createOutputChannel('HydraLance');
     context.subscriptions.push(outputChannel);
+    const hydraConfig = vscode.workspace.getConfiguration('hydralance');
+    ExtensionLogger.setAutoShowOnError(hydraConfig.get('showOutputOnError', false));
+
+    const configWatcher = vscode.workspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration('hydralance.showOutputOnError')) {
+            const updatedConfig = vscode.workspace.getConfiguration('hydralance');
+            ExtensionLogger.setAutoShowOnError(updatedConfig.get('showOutputOnError', false));
+        }
+    });
+    context.subscriptions.push(configWatcher);
     
     ExtensionLogger.log('Hydra Helper extension is now becoming active!');
 
