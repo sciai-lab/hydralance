@@ -1209,6 +1209,10 @@ export async function activate(context: vscode.ExtensionContext) {
     activateHydraLinting(context);
 }
 
+function stripYamlExtension(value: string): string {
+    return value.replace(/\.(ya?ml)$/i, '');
+}
+
 // Common function to find target path for defaults entries
 function findTargetPathForDefaults(
     document: vscode.TextDocument,
@@ -1218,13 +1222,15 @@ function findTargetPathForDefaults(
 
     if (parsedEntry.type === 'group_default') {
         if (parsedEntry.option && typeof parsedEntry.option === 'string') {
-            relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yaml`));
-            relativePaths.push(path.join(parsedEntry.configGroup, `${parsedEntry.option}.yml`));
+            const optionName = stripYamlExtension(parsedEntry.option);
+            relativePaths.push(path.join(parsedEntry.configGroup, `${optionName}.yaml`));
+            relativePaths.push(path.join(parsedEntry.configGroup, `${optionName}.yml`));
         }
     } else if (parsedEntry.type === 'config') {
+        const sanitizedName = stripYamlExtension(parsedEntry.configName);
         const configPath = parsedEntry.configGroup 
-            ? path.join(parsedEntry.configGroup, parsedEntry.configName)
-            : parsedEntry.configName;
+            ? path.join(parsedEntry.configGroup, sanitizedName)
+            : sanitizedName;
         relativePaths.push(`${configPath}.yaml`);
         relativePaths.push(`${configPath}.yml`);
     }
@@ -1327,6 +1333,10 @@ class HydraDefinitionProvider implements vscode.DefinitionProvider {
                 positionInVirtualDoc
             );
             
+            function stripYamlExtension(value: string): string {
+                return value.replace(/\.(ya?ml)$/i, '');
+            }
+
             await helper.cleanup();
             
             if (locations && locations.length > 0) {
