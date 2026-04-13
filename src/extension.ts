@@ -1223,7 +1223,7 @@ function resolveConfiguredPath(input: string | undefined, workspaceFolder: vscod
         return undefined;
     }
 
-    let resolvedPath = trimmed.replace(/^~(?=$|\/)/, os.homedir());
+    let resolvedPath = trimmed.replace(/^~(?=$|\/|\\)/, os.homedir());
     resolvedPath = resolvedPath.replace(/\$\{workspaceFolder\}/g, workspaceFolder.uri.fsPath);
 
     if (!path.isAbsolute(resolvedPath)) {
