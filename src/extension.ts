@@ -1233,12 +1233,17 @@ function resolveConfiguredPath(input: string | undefined, workspaceFolder: vscod
     return path.normalize(resolvedPath);
 }
 
+function isWithinWorkspaceRoot(workspaceRoot: string, candidatePath: string): boolean {
+    const relativePath = path.relative(workspaceRoot, candidatePath);
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
 function collectSearchDirectories(document: vscode.TextDocument, workspaceFolder: vscode.WorkspaceFolder): string[] {
     const workspaceRoot = workspaceFolder.uri.fsPath;
     const directories = new Set<string>();
     let currentPath = path.dirname(document.uri.fsPath);
 
-    while (currentPath.startsWith(workspaceRoot)) {
+    while (isWithinWorkspaceRoot(workspaceRoot, currentPath)) {
         directories.add(currentPath);
         const parentPath = path.dirname(currentPath);
         if (parentPath === currentPath) {
