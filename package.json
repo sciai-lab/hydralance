@@ -67,6 +67,14 @@
           "default": false,
           "description": "Automatically open the HydraLance output channel whenever the extension logs an internal error"
         },
+        "hydralance.additionalSearchPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories (absolute or workspace-relative) to search when resolving Hydra defaults entries"
+        },
         "hydralance.excludePatterns": {
           "type": "array",
           "items": {

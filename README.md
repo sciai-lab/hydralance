@@ -120,6 +120,9 @@ The extension will automatically:
 * **`hydralance.showOutputOnError`** *(boolean, default: false)*  
   Automatically open the HydraLance output channel only when you explicitly opt in to seeing logs as soon as an internal error occurs
 
+* **`hydralance.additionalSearchPaths`** *(array, default: [])*  
+  List of extra directories (absolute or relative to the workspace folder) that should be searched when resolving entries in Hydra defaults lists
+
 ### Interpolation Resolution Settings  
 * **`hydralance.excludePatterns`** *(array, default: [".venv/**"])*  
   Glob patterns to exclude from YAML file indexing for interpolation resolution

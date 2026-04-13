@@ -1213,6 +1213,59 @@ function stripYamlExtension(value: string): string {
     return value.replace(/\.(ya?ml)$/i, '');
 }
 
+function resolveConfiguredPath(input: string | undefined, workspaceFolder: vscode.WorkspaceFolder): string | undefined {
+    if (!input) {
+        return undefined;
+    }
+
+    const trimmed = input.trim();
+    if (!trimmed) {
+        return undefined;
+    }
+
+    let resolvedPath = trimmed.replace(/^~(?=$|\/|\\)/, os.homedir());
+    resolvedPath = resolvedPath.replace(/\$\{workspaceFolder\}/g, workspaceFolder.uri.fsPath);
+
+    if (!path.isAbsolute(resolvedPath)) {
+        resolvedPath = path.join(workspaceFolder.uri.fsPath, resolvedPath);
+    }
+
+    return path.normalize(resolvedPath);
+}
+
+function isWithinWorkspaceRoot(workspaceRoot: string, candidatePath: string): boolean {
+    const relativePath = path.relative(workspaceRoot, candidatePath);
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function collectSearchDirectories(document: vscode.TextDocument, workspaceFolder: vscode.WorkspaceFolder): string[] {
+    const workspaceRoot = workspaceFolder.uri.fsPath;
+    const directories = new Set<string>();
+    let currentPath = path.dirname(document.uri.fsPath);
+
+    while (isWithinWorkspaceRoot(workspaceRoot, currentPath)) {
+        directories.add(currentPath);
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) {
+            break;
+        }
+        currentPath = parentPath;
+    }
+
+    directories.add(workspaceRoot);
+
+    const config = vscode.workspace.getConfiguration('hydralance', workspaceFolder.uri);
+    const additionalPaths = config.get<string[]>('additionalSearchPaths', []);
+    for (const userPath of additionalPaths) {
+        const resolved = resolveConfiguredPath(userPath, workspaceFolder);
+        if (resolved) {
+            directories.add(resolved);
+        }
+    }
+
+    return Array.from(directories);
+}
+
 // Common function to find target path for defaults entries
 function findTargetPathForDefaults(
     document: vscode.TextDocument,
@@ -1246,29 +1299,20 @@ function findTargetPathForDefaults(
         return undefined;
     }
 
-    let currentPath = path.dirname(document.uri.fsPath);
     const workspaceRoot = workspaceFolder.uri.fsPath;
+    const searchDirectories = collectSearchDirectories(document, workspaceFolder);
 
-    while (currentPath.startsWith(workspaceRoot)) {
+    for (const basePath of searchDirectories) {
         for (const relativePath of relativePaths) {
-            const fullPath = path.join(currentPath, relativePath);
+            const fullPath = path.join(basePath, relativePath);
             if (fs.existsSync(fullPath)) {
-                // Return the relative path from workspace root for a cleaner display
-                return { 
-                    path: path.relative(workspaceRoot, fullPath), 
+                return {
+                    path: path.relative(workspaceRoot, fullPath),
                     exists: true,
-                    fullPath: fullPath
+                    fullPath
                 };
             }
         }
-        
-        // Move one directory up
-        const parentPath = path.dirname(currentPath);
-        if (parentPath === currentPath) {
-            // Reached the root of the file system
-            break;
-        }
-        currentPath = parentPath;
     }
 
     // If file doesn't exist, still show the expected path
